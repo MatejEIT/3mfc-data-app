@@ -77,9 +77,15 @@ if read_only:
 st.markdown(" ".join(chips), unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ grid
-T.legend()
+lg, tg = st.columns([4, 1])
+with lg:
+    T.legend()
+show_empty = tg.toggle("Show empty lines", value=False, key=f"show_empty::{ns}",
+                       help="Unused template rows (e.g. 'Project name and Customer name') are hidden by default. "
+                            "Show them to enter a new customer or project.")
 new_pending, preview, parse_errors = G.render(ws, view, pending, read_only,
-                                              key=f"grid::{ns}::{ws.state.revision_no}::{view}")
+                                              key=f"grid::{ns}::{ws.state.revision_no}::{view}::{show_empty}",
+                                              show_empty=show_empty)
 if new_pending != pending:
     st.session_state[pend_key] = new_pending
     st.rerun()

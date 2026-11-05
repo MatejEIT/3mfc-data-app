@@ -26,7 +26,7 @@ MISSING_BG = "#FEE2E2"
 _CSS = f"""
 <style>
   .block-container {{ padding-top: 4.2rem; padding-bottom: 3rem; max-width: 1600px; }}
-  header[data-testid="stHeader"] {{ background: {DARK_NAVY}; }}
+  header[data-testid="stHeader"] {{ background: {CARD}; border-bottom: 1px solid {BORDER}; }}
   .itis-bar {{ display:flex; align-items:center; justify-content:space-between; gap:16px;
               background:{CARD}; border:1px solid {BORDER}; border-radius:12px; padding:14px 20px;
               margin-bottom:18px; }}

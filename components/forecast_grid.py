@@ -64,8 +64,15 @@ def _state_code(ws: Workspace, cells: dict, line, field: str, editable: bool, pe
     return "I" if c.state == ValueState.ENTERED else "B"
 
 
+def _line_is_empty(ws: Workspace, cells: dict, line_id: str, pending: PendingEdits) -> bool:
+    """A detail line without any entered value and without pending edits (unused template row)."""
+    if any(k[0] == line_id for k in pending):
+        return False
+    return not any(c.state == ValueState.ENTERED for (lid, _), c in cells.items() if lid == line_id)
+
+
 def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, pending: PendingEdits,
-                errors: dict, read_only: bool) -> tuple[pd.DataFrame, list[str]]:
+                errors: dict, read_only: bool, show_empty: bool = False) -> tuple[pd.DataFrame, list[str]]:
     weeks_by_p: dict[str, list] = {}
     for w in ws.calendar:
         weeks_by_p.setdefault(w.code_period_value, []).append(w)
@@ -79,6 +86,9 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
     current_section = None
     for ln in ws.lines:
         m = METRICS[ln.metric_code]
+        if not show_empty and ln.row_type == RowType.DETAIL and m.input_mode == InputMode.LINE_INPUT \
+                and _line_is_empty(ws, cells, ln.line_id, pending):
+            continue
         if m.section != current_section:
             current_section = m.section
             rows.append({"_line_id": f"__section__{m.section.name}", "_kind": "SECTION", "Line": m.section.value,
@@ -94,7 +104,9 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
                 val = cells.get((ln.line_id, f)) if is_month else None
                 amount = val.amount if val is not None and val.state == ValueState.ENTERED else None
             elif is_month:
-                amount = result.line_monthly[(ln.line_id, f[:6])].amount
+                mv = result.line_monthly[(ln.line_id, f[:6])]
+                # a detail line with no input in the month stays empty (empty is not zero)
+                amount = mv.amount if (ln.row_type != RowType.DETAIL or mv.has_input) else None
             else:
                 cv = result.line_weekly[(ln.line_id, f)]
                 c = cells.get((ln.line_id, f))
@@ -192,14 +204,14 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
     }
 
 
-def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key: str
+def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key: str, show_empty: bool = False
            ) -> tuple[PendingEdits, ForecastResult, dict]:
     """Draw the grid; return updated pending edits, preview result and parse errors."""
     from st_aggrid import AgGrid
 
     cells, errors = preview_cells(ws, pending)
     result = calculate(ws.lines, ws.calendar, cells)
-    frame, fields = build_frame(ws, result, cells, view, pending, errors, read_only)
+    frame, fields = build_frame(ws, result, cells, view, pending, errors, read_only, show_empty)
     resp = AgGrid(frame, gridOptions=grid_options(ws, frame, fields, view), allow_unsafe_jscode=True,
                   custom_css=_CSS, height=min(36 + 30 * (len(frame) + 2), 760), theme="balham",
                   update_on=["cellValueChanged"], key=key, fit_columns_on_grid_load=False,
