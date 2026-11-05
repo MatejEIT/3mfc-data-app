@@ -91,7 +91,10 @@ from committed revisions. `REVISION.CALC_STATUS` tracks whether backend material
 * Identity: `X-Kbc-User-Email` from the Data App auth proxy (deploy with authentication enabled).
 * Authorisation: `DIM_3MFC_APP_USER_ACCESS`; `APP_BOOTSTRAP_ADMINS` only until the table is filled.
 * Every service method checks `require_view / require_edit / require_hq`. Calculated cells are rejected server-side.
-* Token only in Data App secrets; `APP_DEV_USER` is for local development and must never be set in the deployed app.
+* Token only in Data App secrets / platform injection.
+* **TEMPORARY (pre-release):** the Keboola app is password-protected (basic auth, no identity) and
+  `keboola-config/supervisord/services/app.conf` sets `APP_DEV_USER=matej.loub@embedit.com` (HQ). This MUST be
+  removed when OIDC is configured and before any entity/HQ user gets access.
 
 ## 6. Known limitations
 
