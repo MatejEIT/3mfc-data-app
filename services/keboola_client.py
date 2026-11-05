@@ -55,20 +55,38 @@ def _where_sql(where: Filter | None) -> str:
 
 
 class KeboolaGateway:
-    def __init__(self, kbc_url: str, kbc_token: str, app_bucket: str, staging_db: str):
-        from keboola_streamlit import KeboolaStreamlit  # imported lazily: not needed in tests
+    """Query Service gateway on the Data App's Storage-access workspace.
 
-        self._ks = KeboolaStreamlit(root_url=kbc_url, token=kbc_token)
+    Reads use fully qualified Snowflake names. Writes go to app tables granted
+    to the workspace via `unload_strategy: direct-grant`; each upsert is ONE
+    transactional Query Service job (DELETE matching keys + INSERT), so a
+    table write is atomic.
+    """
+
+    CHUNK = 400
+
+    def __init__(self, query_service_url: str, token_provider: Callable[[], str], branch_id: str,
+                 workspace_id: str, app_bucket: str, staging_db: str):
+        from keboola_query_service import Client  # imported lazily: not needed in tests
+
+        self._client = Client(base_url=query_service_url, token=token_provider())
+        self._branch = branch_id
+        self._workspace = workspace_id
         self._app_bucket = app_bucket
         self._db = staging_db
 
     def _fqn(self, bucket: str, table: str) -> str:
         return f'"{self._db}"."{bucket}"."{table}"'
 
+    def _run(self, statements: list[str]):
+        try:
+            return self._client.execute_query(self._branch, self._workspace, statements, transactional=True)
+        except Exception as exc:  # surface the SQL context, never silently ignore
+            raise StorageWriteError(f"Query Service error: {exc}") from exc
+
     def _query(self, sql: str) -> pd.DataFrame:
-        df = self._ks.query_service_execute_query(sql, return_df=True, convert_types=False)
-        if df is None:
-            raise StorageWriteError(f"Query failed: {sql[:200]}")
+        res = self._run([sql])[0]
+        df = pd.DataFrame(res.data, columns=[c.name for c in res.columns])
         return df.fillna("").astype(str)
 
     def read_app(self, table: TableDef, where: Filter | None = None) -> pd.DataFrame:
@@ -84,10 +102,27 @@ class KeboolaGateway:
     def upsert_app(self, table: TableDef, df: pd.DataFrame) -> None:
         if df.empty:
             return
-        out = df.reindex(columns=list(table.columns), fill_value="").fillna("").astype(str)
-        err = self._ks.write_table(f"{self._app_bucket}.{table.name}", out, is_incremental=True)
-        if err:
-            raise StorageWriteError(f"Write to {table.name} failed: {err}")
+        self._run(upsert_statements(self._fqn(self._app_bucket, table.name), table, df, self.CHUNK))
+
+
+def upsert_statements(fqn: str, table: TableDef, df: pd.DataFrame, chunk: int = 400) -> list[str]:
+    """DELETE rows with the same primary key, then INSERT - executed in one transaction.
+    Append-only tables are insert-only (a duplicate key is a bug and fails loudly in tests)."""
+    out = df.reindex(columns=list(table.columns), fill_value="").fillna("").astype(str)
+    out = out.drop_duplicates(subset=list(table.primary_key), keep="last")
+    cols = ", ".join(f'"{c}"' for c in table.columns)
+    pk = list(table.primary_key)
+    statements: list[str] = []
+    for start in range(0, len(out), chunk):
+        part = out.iloc[start:start + chunk]
+        if not table.append_only:
+            keys = ", ".join("(" + ", ".join(_sql_literal(r[c]) for c in pk) + ")" for _, r in part.iterrows())
+            key_cols = ", ".join(f'"{c}"' for c in pk)
+            statements.append(f"DELETE FROM {fqn} WHERE ({key_cols}) IN ({keys})")
+        values = ", ".join("(" + ", ".join(_sql_literal(v) for v in row) + ")"
+                           for row in part.itertuples(index=False, name=None))
+        statements.append(f"INSERT INTO {fqn} ({cols}) VALUES {values}")
+    return statements
 
 
 class InMemoryGateway:

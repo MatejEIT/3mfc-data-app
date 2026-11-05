@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import streamlit as st
 
 from services.auth_service import User, resolve_user
-from services.config import Settings, load_settings
+from services.config import Settings, load_settings, storage_token
 from services.forecast_service import ForecastService
 from services.keboola_client import Gateway, InMemoryGateway, KeboolaGateway
 from services.reference_data import ReferenceData
@@ -32,9 +32,12 @@ def get_context() -> AppContext:
     if settings.backend == "memory":
         gw: Gateway = InMemoryGateway()
     else:
-        if not settings.kbc_token:
-            raise RuntimeError("KBC_TOKEN is not configured")
-        gw = KeboolaGateway(settings.kbc_url, settings.kbc_token, settings.app_bucket, settings.staging_db)
+        missing = [n for n, v in (("Storage token", storage_token()), ("workspace", settings.workspace_id),
+                                  ("QUERY_SERVICE_URL", settings.query_service_url)) if not v]
+        if missing:
+            raise RuntimeError("Missing runtime configuration: " + ", ".join(missing))
+        gw = KeboolaGateway(settings.query_service_url, storage_token, settings.branch_id, settings.workspace_id,
+                            settings.app_bucket, settings.staging_db)
     repo = ForecastRepository(gw)
     ref = ReferenceData(gw, settings)
     return AppContext(settings, gw, repo, ref, ForecastService(repo, ref), SnapshotService(repo, ref))

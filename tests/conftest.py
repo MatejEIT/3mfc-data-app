@@ -99,7 +99,9 @@ def seed_frame(bu: str = BU) -> pd.DataFrame:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings("", "", "in.c-3mfc-app", "DB", "weekly", "bootstrap", "fx", "memory", "", "HQ", "")
+    return Settings(kbc_url="", query_service_url="", branch_id="1", workspace_id="", app_bucket="in.c-3mfc-app",
+                    staging_db="DB", bucket_weekly="weekly", bucket_bootstrap="bootstrap", bucket_fx="fx",
+                    backend="memory", dev_user="", dev_role="HQ", app_url="")
 
 
 @pytest.fixture

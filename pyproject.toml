@@ -1,0 +1,23 @@
+[project]
+name = "3mfc-data-app"
+version = "0.1.0"
+description = "3M Cash Flow Forecast – VITRONIC / ITIS Holding (Keboola Data App)"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.46,<2",
+    "pandas>=2.2,<3",
+    "plotly>=5.24,<7",
+    "streamlit-aggrid>=1.1,<2",
+    "keboola-query-service>=0.4,<0.5",
+    "python-dotenv>=1.0",
+    "openpyxl>=3.1,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

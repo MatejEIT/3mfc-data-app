@@ -19,22 +19,24 @@ tests/                 pytest suite (in-memory backend with Keboola upsert seman
 
 ## Local development
 
-Requirements: Python 3.11+, git.
+Requirements: [uv](https://docs.astral.sh/uv/), git. Dependencies live in `pyproject.toml` / `uv.lock`
+(the Keboola python-js runtime installs them with `uv sync`).
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pytest -q
+uv sync
+uv run pytest -q
 ```
 
-Run against Keboola (read-only staging + app bucket) with a Storage token that has access to project 810:
+Running locally against Keboola needs a project token and a workspace (`KBC_TOKEN`, `WORKSPACE_ID`,
+`QUERY_SERVICE_URL`, `APP_DEV_USER` in `.env`). The usual way to see the app with real data is the
+Keboola dev draft (see below).
 
-```powershell
-$env:KBC_TOKEN = "<token>"
-$env:APP_DEV_USER = "you@embedit.com"; $env:APP_DEV_ROLE = "HQ"   # local only
-streamlit run app.py
-```
+## Keboola runtime
+
+`keboola-config/` follows the python-js Data App contract: nginx on 8888 → Streamlit on 8501 (supervisord),
+`setup.sh` runs `uv sync`. `supervisord-dev/` is used only by the password-protected dev draft and sets a fixed
+HQ identity there. Reads and writes go through Query Service on the app's Storage-access workspace; the
+`in.c-3mfc-app` tables are granted to it with `direct-grant` output mappings.
 
 ## Deployment (Keboola Data App) – not done yet, requires approval
 
