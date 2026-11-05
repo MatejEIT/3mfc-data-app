@@ -51,7 +51,12 @@ A failure at any step leaves the previous revision current (covered by `test_fai
 **Full state per revision** (~1,100 input cells per entity) makes every revision – in particular the
 SUBMITTED one – immutable and directly comparable; storage volume is negligible (~1 MB / snapshot / 100 revisions).
 
-### Tables (bucket `in.c-3mfc-app`, created by `scripts/create_app_tables.py` – not executed yet)
+### Tables (bucket `in.c-3mfc-app`)
+
+Created 2026-11-05 by the one-off Keboola config *3MFC – App Tables Setup (one-off)*
+(`keboola.python-transformation-v2`, id `01m6nvs5ydwd9etbvn6ymxm246`, job 119041975). It writes header-only
+CSVs with incremental output, so re-running it never deletes data. `scripts/create_app_tables.py` is the
+token-based alternative with the same schema.
 
 | Table | PK | Purpose |
 |---|---|---|

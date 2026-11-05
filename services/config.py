@@ -29,6 +29,13 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    try:  # local development: read .env (never committed); in the Data App env vars come from secrets
+        from pathlib import Path
+
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    except ImportError:
+        pass
     return Settings(
         kbc_url=_env("KBC_URL", "https://connection.europe-west3.gcp.keboola.com"),
         kbc_token=_env("KBC_TOKEN"),

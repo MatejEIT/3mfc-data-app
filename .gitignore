@@ -8,4 +8,6 @@ venv/
 .idea/
 .vscode/
 *.xlsx
-!docs/**/*.xlsx
+# client reference material (financial data) – never push to GitHub
+docs/reference/
+docs/CONSOLIDATION_SPEC.md

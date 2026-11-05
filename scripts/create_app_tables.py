@@ -24,6 +24,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    except ImportError:
+        pass
 
     url = os.environ.get("KBC_URL", "https://connection.europe-west3.gcp.keboola.com")
     token = os.environ.get("KBC_TOKEN", "")
