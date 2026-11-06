@@ -41,7 +41,10 @@ TEMPLATE: list[Line] = [
     for m in sorted(METRICS.values(), key=lambda m: m.template_row)
     if m.code not in ("AR_CLOSING_BALANCE", "AP_CLOSING_BALANCE", "AR_OVERDUE_CLOSING_BALANCE",
                       "AP_OVERDUE_CLOSING_BALANCE")
-] + [Line("L_AR_NOT_OVERDUE_DETAIL_2", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Second customer", 16)]
+] + [Line("L_AR_NOT_OVERDUE_DETAIL_2", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Second customer", 16),
+     # free customer slots exactly as in the Excel template
+     Line("L_AR_PH1", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Project name and Customer name", 17),
+     Line("L_AR_PH2", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Project name and Customer name", 18)]
 
 
 def _wk(p, i, s, e, status=CalendarStatus.SOURCE_EXCEL):
@@ -97,15 +100,13 @@ def seed_frame(bu: str = BU) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@pytest.fixture
-def settings() -> Settings:
+def make_settings() -> Settings:
     return Settings(kbc_url="", query_service_url="", branch_id="1", workspace_id="", app_bucket="in.c-3mfc-app",
                     staging_db="DB", bucket_weekly="weekly", bucket_bootstrap="bootstrap", bucket_fx="fx",
                     backend="memory", dev_user="", dev_role="HQ", app_url="")
 
 
-@pytest.fixture
-def gateway() -> InMemoryGateway:
+def make_gateway() -> InMemoryGateway:
     entities = pd.DataFrame([
         {"CODE_BUSINESS_UNIT": "V001DE", "CODE_ENTITY": "V001", "NAME_ENTITY": "VITRONIC Machine Vision GmbH",
          "COUNTRY": "DE", "CODE_REGION": "WEE", "CODE_LOCAL_CURRENCY": "EUR"},
@@ -127,6 +128,16 @@ def gateway() -> InMemoryGateway:
         ("weekly", "FT_3MFC_APP_WEEKLY_INPUT_SEED"): seed_frame(),
         ("fx", "FT_3MFC_FX_3MONTH"): fx,
     })
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return make_settings()
+
+
+@pytest.fixture
+def gateway() -> InMemoryGateway:
+    return make_gateway()
 
 
 @pytest.fixture

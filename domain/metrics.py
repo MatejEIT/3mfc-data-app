@@ -90,11 +90,31 @@ _METRICS: list[MetricDef] = [
               InputMode.MONTH_STATE_INPUT, Section.BALANCES, required=True),
     MetricDef("AP_CLOSING_BALANCE", "Total payables (AP closing balance)", _B, None, 100, Aggregation.MONTH_STATE,
               InputMode.MONTH_STATE_INPUT, Section.BALANCES, required=True),
-    MetricDef("AR_OVERDUE_CLOSING_BALANCE", "Receivables overdue", _B, None, 102, Aggregation.MONTH_STATE,
-              InputMode.MONTH_STATE_INPUT, Section.BALANCES, required=True),
-    MetricDef("AP_OVERDUE_CLOSING_BALANCE", "Payables overdue", _B, None, 103, Aggregation.MONTH_STATE,
-              InputMode.MONTH_STATE_INPUT, Section.BALANCES, required=True),
+    MetricDef("AR_OVERDUE_CLOSING_BALANCE", "Total receivables - overdue (AR closing balance)", _B, None, 102,
+              Aggregation.MONTH_STATE, InputMode.MONTH_STATE_INPUT, Section.BALANCES, required=True),
+    MetricDef("AP_OVERDUE_CLOSING_BALANCE", "Total payables - overdue (AP closing balance)", _B, None, 103,
+              Aggregation.MONTH_STATE, InputMode.MONTH_STATE_INPUT, Section.BALANCES, required=True),
 ]
+
+# Detail lists where the entity types the customer / project name itself (yellow column B in the
+# Excel template, rows 15-28, 31-44, 47-60, 71-80). The "OTHER" row of each list is fixed.
+NAMEABLE_METRICS: frozenset[str] = frozenset({
+    "AR_NOT_OVERDUE_DETAIL", "AR_OVERDUE_DETAIL", "NEW_INVOICE_DETAIL", "PROJECT_EXPENSE_DETAIL",
+})
+FIXED_LABELS: frozenset[str] = frozenset({"OTHER"})
+# Template texts that mean "this slot is still free" (seen in the 16 entity files).
+PLACEHOLDER_LABELS: frozenset[str] = frozenset({
+    "", "0", "#ref!", "project name and customer name", "name project expense", "project name + project no.",
+})
+MAX_LABEL_LENGTH = 120
+
+
+def is_nameable(metric_code: str, base_label: str) -> bool:
+    return metric_code in NAMEABLE_METRICS and base_label.strip().upper() not in FIXED_LABELS
+
+
+def is_placeholder_label(label: str) -> bool:
+    return label.strip().lower() in PLACEHOLDER_LABELS
 
 METRICS: dict[str, MetricDef] = {m.code: m for m in _METRICS}
 METRIC_ORDER: list[str] = [m.code for m in sorted(_METRICS, key=lambda m: m.template_row)]

@@ -46,7 +46,7 @@ with tab_status:
                       "CODE_BUSINESS_UNIT": "Entity", "NAME_ENTITY": "Name", "CODE_REGION": "Region",
                       "CODE_LOCAL_CURRENCY": "LCY", "SUBMITTED_BY": "Submitted by", "SUBMITTED_AT_UTC": "Submitted at",
                       "CURRENT_REVISION_ID": "Current revision", "UPDATED_AT_UTC": "Last update"}),
-            hide_index=True, use_container_width=True)
+            hide_index=True, width="stretch")
         st.caption("To edit an entity's forecast as HQ, open it in **Forecast Editor** – every saved change is "
                    "recorded as HQ_ADJUSTMENT in the audit log.")
 
@@ -73,7 +73,7 @@ with tab_compare:
                 df = pd.DataFrame(diff)
                 for c in ("Submitted", "Current", "Difference"):
                     df[c] = df[c].map(lambda v: None if v is None else float(v))
-                st.dataframe(df, hide_index=True, use_container_width=True)
+                st.dataframe(df, hide_index=True, width="stretch")
 
 with tab_snap:
     st.markdown("**Create the next rolling snapshot (2+1).** Months 1–2 roll over from the previous snapshot's "
@@ -88,7 +88,7 @@ with tab_snap:
     if cal:
         cal_df = pd.DataFrame([{"Interval": w.code_week_period, "From": w.start, "To": w.end,
                                 "Status": w.status.value} for w in cal])
-        st.dataframe(cal_df, hide_index=True, use_container_width=True)
+        st.dataframe(cal_df, hide_index=True, width="stretch")
         if any(w.needs_confirmation for w in cal):
             st.warning("The calendar of at least one month is a PROPOSAL (PROPOSED_CONFIRM_REQUIRED). "
                        "Calendar confirmation by HQ is part of the next release; the snapshot can be created and the "

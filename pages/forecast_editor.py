@@ -56,7 +56,9 @@ if ws.state.head is None:
     st.info(f"No forecast for {labels[bu]} in snapshot {snapshot}.")
     st.stop()
 
+lbl_key = f"labels::{ns}"
 pending: dict = st.session_state.setdefault(pend_key, {})
+label_pending: dict = st.session_state.setdefault(lbl_key, {})
 ic_rows: list[IcDetail] = st.session_state.setdefault(ic_key, list(ws.state.ic_details))
 submitted = ws.status == SubmissionStatus.SUBMITTED
 read_only = not user.can_edit(bu, submitted)
@@ -70,24 +72,29 @@ chips = [
     status_chip,
     T.chip(f"Revision {ws.state.revision_no} · {ws.state.head.kind.value}", "info"),
 ]
-if pending:
-    chips.append(T.chip(f"{len(pending)} unsaved change(s)", "warn"))
+if pending or label_pending:
+    chips.append(T.chip(f"{len(pending) + len(label_pending)} unsaved change(s)", "warn"))
 if read_only:
     chips.append(T.chip("read-only", ""))
 st.markdown(" ".join(chips), unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ grid
-lg, tg = st.columns([4, 1])
-with lg:
-    T.legend()
-show_empty = tg.toggle("Show empty lines", value=False, key=f"show_empty::{ns}",
-                       help="Unused template rows (e.g. 'Project name and Customer name') are hidden by default. "
-                            "Show them to enter a new customer or project.")
-new_pending, preview, parse_errors = G.render(ws, view, pending, read_only,
-                                              key=f"grid::{ns}::{ws.state.revision_no}::{view}::{show_empty}",
-                                              show_empty=show_empty)
-if new_pending != pending:
+u1, u2, u3 = st.columns([4.2, 1.2, 1.4])
+unit = u2.segmented_control("Unit", [f"k{ws.currency}", ws.currency], default=f"k{ws.currency}",
+                            key=f"unit::{ns}", label_visibility="collapsed") or f"k{ws.currency}"
+scale = 1000 if unit.startswith("k") else 1
+show_empty = u3.toggle("All template rows", value=False, key=f"show_empty::{ns}",
+                       help="The Excel template has ~15 free rows per customer / project list. Only the first free "
+                            "row of each list is shown ('＋ type customer / project name'); switch on to see all.")
+with u1:
+    T.instructions(ws.currency, scale)
+T.legend()
+new_pending, new_labels, preview, parse_errors = G.render(
+    ws, view, pending, read_only, key=f"grid::{ns}::{ws.state.revision_no}::{view}::{show_empty}::{scale}",
+    show_empty=show_empty, scale=scale, label_pending=label_pending)
+if new_pending != pending or new_labels != label_pending:
     st.session_state[pend_key] = new_pending
+    st.session_state[lbl_key] = new_labels
     st.rerun()
 
 # ------------------------------------------------------------------ KPI strip
@@ -97,14 +104,18 @@ closing = preview.kpi("CLOSING_CASH_BALANCE", last_p)
 net = sum((preview.kpi("NET_CASH_MOVEMENT", p) or Decimal(0)) for p in preview.periods)
 weekly_closing = [preview.metric_weekly[("CLOSING_CASH_BALANCE", w.code_week_period)].amount for w in preview.weeks]
 lowest = min((v for v in weekly_closing if v is not None), default=None)
+def _k(v):
+    return None if v is None else v / scale
+
+
 k = st.columns(4)
-k[0].markdown(T.kpi_card("Opening cash", T.fmt_money(opening), f"{ws.currency} · {G.period_label(first_p)}"),
+k[0].markdown(T.kpi_card("Opening cash", T.fmt_money(_k(opening)), f"{unit} · {G.period_label(first_p)}"),
               unsafe_allow_html=True)
-k[1].markdown(T.kpi_card("Net cash movement", T.fmt_money(net), "3-month horizon",
+k[1].markdown(T.kpi_card("Net cash movement", T.fmt_money(_k(net)), f"{unit} · 3-month horizon",
                          "neg" if net < 0 else "pos"), unsafe_allow_html=True)
-k[2].markdown(T.kpi_card("Closing cash", T.fmt_money(closing), f"{ws.currency} · {G.period_label(last_p)}"),
+k[2].markdown(T.kpi_card("Closing cash", T.fmt_money(_k(closing)), f"{unit} · {G.period_label(last_p)}"),
               unsafe_allow_html=True)
-k[3].markdown(T.kpi_card("Lowest weekly cash", T.fmt_money(lowest), "across 12 intervals",
+k[3].markdown(T.kpi_card("Lowest weekly cash", T.fmt_money(_k(lowest)), f"{unit} · across 12 intervals",
                          "neg" if lowest is not None and lowest < 0 else ""), unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ actions
@@ -122,7 +133,7 @@ def _save(submit: bool, comment: str) -> None:
     try:
         with st.spinner("Validating and saving…"):
             out = ctx.forecasts.save(user, ws, G.pending_to_edits(pending), ic_rows, comment, key,
-                                     reviewed, submit=submit)
+                                     reviewed, submit=submit, label_edits=label_pending)
     except RevisionConflict as exc:
         st.session_state["flash"] = ("error", f"{exc} Your unsaved changes are kept – click **Reload latest**.")
         return
@@ -133,7 +144,7 @@ def _save(submit: bool, comment: str) -> None:
     if out.revision is None:
         st.session_state["flash"] = ("warning", out.message)
         return
-    for k_ in (pend_key, ic_key, idem_key):
+    for k_ in (pend_key, lbl_key, ic_key, idem_key):
         st.session_state.pop(k_, None)
     load_workspace(force=True)
     st.session_state["flash"] = ("success", out.message)
@@ -154,17 +165,17 @@ if not read_only:
     comment = a1.text_input("Change comment", placeholder="Reason for the change (stored in audit log)",
                             label_visibility="collapsed")
     if a2.button("Save draft" if not user.is_hq else "Save", type="secondary", disabled=bool(parse_errors),
-                 use_container_width=True):
+                 width="stretch"):
         _save(False, comment)
         st.rerun()
     if not submitted and a3.button("Submit forecast", type="primary", disabled=bool(parse_errors),
-                                   use_container_width=True):
+                                   width="stretch"):
         confirm_submit()
-    if a4.button("Discard", disabled=not pending, use_container_width=True):
-        st.session_state.pop(pend_key, None)
-        st.session_state.pop(ic_key, None)
+    if a4.button("Discard", disabled=not (pending or label_pending), width="stretch"):
+        for k_ in (pend_key, lbl_key, ic_key):
+            st.session_state.pop(k_, None)
         st.rerun()
-    if a5.button("Reload latest", use_container_width=True):
+    if a5.button("Reload latest", width="stretch"):
         load_workspace(force=True)
         st.rerun()
 
@@ -189,7 +200,7 @@ with tab_val:
         n_block = (df["Severity"] == "BLOCKING").sum()
         st.caption(f"{n_block} blocking · {(df['Severity'] == 'WARNING').sum()} warnings. "
                    "Blocking issues prevent SUBMIT, not saving a draft.")
-        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.dataframe(df, hide_index=True, width="stretch")
 
 with tab_ic:
     st.caption("Split of **IC outflow – other VI group** (template row 89) by counterparty. The split must "
@@ -203,7 +214,7 @@ with tab_ic:
                          columns=["Interval", "Counterparty", "Amount LCY", "Comment", "_id"])
     edited = st.data_editor(
         ic_df, num_rows="dynamic" if not read_only else "fixed", disabled=read_only, hide_index=True,
-        use_container_width=True, key=f"ic_editor::{ns}::{ws.state.revision_no}",
+        width="stretch", key=f"ic_editor::{ns}::{ws.state.revision_no}",
         column_config={
             "Interval": st.column_config.SelectboxColumn(options=week_codes, required=True),
             "Counterparty": st.column_config.SelectboxColumn(options=cps, required=True),
@@ -233,7 +244,7 @@ with tab_ic:
                             "Unallocated": float(main - split), "Status": "OK" if abs(main - split) <= Decimal("0.01")
                             else "UNALLOCATED"})
         if rec:
-            st.dataframe(pd.DataFrame(rec), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rec), hide_index=True, width="stretch")
 
 with tab_tools:
     if read_only:
@@ -243,7 +254,7 @@ with tab_tools:
         input_lines = [ln for ln in ws.lines if ln.row_type.value == "DETAIL"]
         t1, t2 = st.columns(2)
         start_line = t1.selectbox("First line", [ln.line_id for ln in input_lines],
-                                  format_func=lambda i: ws.lines_by_id[i].label, key=f"bp_line::{ns}")
+                                  format_func=lambda i: ws.label(ws.lines_by_id[i]), key=f"bp_line::{ns}")
         start_week = t2.selectbox("First interval", week_codes, key=f"bp_week::{ns}")
         block = st.text_area("Values (tab separated, one line item per row)", key=f"bp_text::{ns}", height=120)
         if st.button("Apply pasted values", disabled=not block.strip()):
@@ -253,7 +264,7 @@ with tab_tools:
             for r_off, text_row in enumerate(block.strip("\n").splitlines()):
                 for c_off, raw in enumerate(text_row.split("\t")):
                     if li + r_off < len(input_lines) and wi + c_off < len(week_codes):
-                        pending[(input_lines[li + r_off].line_id, week_codes[wi + c_off])] = raw.strip()
+                        pending[(input_lines[li + r_off].line_id, week_codes[wi + c_off])] = (raw.strip(), scale)
                         added += 1
             st.session_state[pend_key] = pending
             st.session_state["flash"] = ("info", f"{added} values staged – review the grid and save.")
@@ -267,7 +278,7 @@ with tab_tools:
             for ln in input_lines:
                 c = ws.state.cells.get((ln.line_id, src))
                 stored = "" if c is None or c.amount is None else str(c.amount.quantize(Decimal("0.01")))
-                pending[(ln.line_id, dst)] = pending.get((ln.line_id, src), stored)
+                pending[(ln.line_id, dst)] = pending.get((ln.line_id, src), (stored, 1))
             st.session_state[pend_key] = pending
             st.rerun()
 
@@ -276,9 +287,9 @@ with tab_hist:
     if audit.empty:
         st.caption("No changes recorded yet.")
     else:
-        names = {ln.line_id: ln.label for ln in ws.lines}
+        names = {ln.line_id: ws.label(ln) for ln in ws.lines}
         view_df = audit.assign(Line=audit["LINE_ID"].map(names).fillna(audit["LINE_ID"].str[:10]))
         view_df = view_df.sort_values("CHANGED_AT_UTC", ascending=False)[
             ["CHANGED_AT_UTC", "CHANGED_BY", "CHANGED_ROLE", "CHANGE_TYPE", "REVISION_ID", "CODE_WEEK_PERIOD", "Line",
              "OLD_VALUE_LCY", "NEW_VALUE_LCY", "COMMENT"]]
-        st.dataframe(view_df, hide_index=True, use_container_width=True, height=360)
+        st.dataframe(view_df, hide_index=True, width="stretch", height=360)

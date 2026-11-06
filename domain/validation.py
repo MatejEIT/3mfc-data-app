@@ -143,6 +143,35 @@ def validate_edits(
     return ok, issues
 
 
+def validate_label_edits(
+    edits: dict[str, str],
+    lines_by_id: dict[str, Line],
+    business_unit: str,
+) -> tuple[dict[str, str], list[Issue]]:
+    """Customer / project names typed by the entity (yellow column B in the Excel template)."""
+    from domain.metrics import MAX_LABEL_LENGTH, is_nameable
+
+    ok: dict[str, str] = {}
+    issues: list[Issue] = []
+    for line_id, raw in edits.items():
+        line = lines_by_id.get(line_id)
+        if line is None:
+            issues.append(Issue(Severity.BLOCKING, "E_UNKNOWN_LINE", "Unknown forecast line", business_unit,
+                                line_id=line_id))
+            continue
+        if not is_nameable(line.metric_code, line.label):
+            issues.append(Issue(Severity.BLOCKING, "E_LABEL_FIXED", f"'{line.label}' is a fixed template row",
+                                business_unit, line_id=line_id, metric_code=line.metric_code))
+            continue
+        label = " ".join(str(raw or "").split())
+        if len(label) > MAX_LABEL_LENGTH:
+            issues.append(Issue(Severity.BLOCKING, "E_LABEL_LENGTH", f"Name is longer than {MAX_LABEL_LENGTH} characters",
+                                business_unit, line_id=line_id, metric_code=line.metric_code))
+            continue
+        ok[line_id] = label
+    return ok, issues
+
+
 def validate_forecast(
     business_unit: str,
     lines: list[Line],

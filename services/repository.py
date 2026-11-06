@@ -107,6 +107,7 @@ class ForecastState:
     head: RevisionInfo | None
     cells: dict[tuple[str, str], InputCell] = field(default_factory=dict)
     ic_details: list[IcDetail] = field(default_factory=list)
+    labels: dict[str, str] = field(default_factory=dict)     # line_id -> entity-typed customer/project name
 
     @property
     def revision_no(self) -> int:
@@ -129,6 +130,8 @@ class CommitRequest:
     idempotency_key: str
     submission_id: str = ""
     carry_forward_reviewed: frozenset[str] = frozenset()
+    labels: dict[str, str] = field(default_factory=dict)
+    metric_by_line: dict[str, str] = field(default_factory=dict)
 
 
 def _rev_from_row(r: pd.Series) -> RevisionInfo:
@@ -173,6 +176,8 @@ class ForecastRepository:
             state.ic_details.append(IcDetail(r["DETAIL_ID"], r["CODE_PERIOD_VALUE"], r["CODE_WEEK_PERIOD"],
                                              r["CODE_COUNTERPARTY_ENTITY"], Decimal(r["AMOUNT_LCY"] or "0"),
                                              r["COMMENT"], ValueOrigin(r["VALUE_ORIGIN"])))
+        for _, r in self.gw.read_app(S.LINE_LABEL, {"WRITE_ID": rev.write_id}).iterrows():
+            state.labels[r["LINE_ID"]] = r["LINE_LABEL"]
         return state
 
     def audit(self, snapshot: str | None = None, bu: str | None = None) -> pd.DataFrame:
@@ -246,6 +251,11 @@ class ForecastRepository:
                 "CODE_CURRENCY": req.currency, "VALUE_ORIGIN": d.origin.value, "COMMENT": d.comment,
                 "MODIFIED_BY": req.actor, "MODIFIED_AT_UTC": now,
             } for d in req.ic_details]))
+        if req.labels:
+            self.gw.upsert_app(S.LINE_LABEL, pd.DataFrame([{
+                **base, "LINE_ID": line_id, "METRIC_CODE": req.metric_by_line.get(line_id, ""), "LINE_LABEL": label,
+                "MODIFIED_BY": req.actor, "MODIFIED_AT_UTC": now,
+            } for line_id, label in req.labels.items()]))
         if req.audit:
             self.gw.upsert_app(S.AUDIT, pd.DataFrame([{
                 "EVENT_ID": self.ids(), "WRITE_ID": write_id, "SUBMISSION_ID": req.submission_id,

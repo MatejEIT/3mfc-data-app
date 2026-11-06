@@ -130,7 +130,8 @@ class SnapshotService:
             self.repo.commit(CommitRequest(
                 new_snapshot, bu, str(ents.loc[bu, "CODE_LOCAL_CURRENCY"]), 0, RevisionKind.ROLLOVER, roll.cells,
                 roll.ic_details, audit, user.email, user.role,
-                f"Rolling 2+1 from {prev.head.revision_id}", f"rollover-{new_snapshot}-{bu}"))
+                f"Rolling 2+1 from {prev.head.revision_id}", f"rollover-{new_snapshot}-{bu}",
+                labels=dict(prev.labels), metric_by_line={ln.line_id: ln.metric_code for ln in lines}))
             res.created.append(bu)
             res.issues += roll.issues
         if any(w.needs_confirmation for w in new_cal):

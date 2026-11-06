@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from domain.calc import ForecastResult, calculate, ordered_weeks
-from domain.metrics import IC_SPLIT_METRIC, METRICS, InputMode
+from domain.metrics import IC_SPLIT_METRIC, METRICS, InputMode, is_nameable, is_placeholder_label
 from domain.models import (
     ChangeType,
     IcDetail,
@@ -18,12 +18,13 @@ from domain.models import (
     Line,
     Provenance,
     RevisionKind,
+    Severity,
     SubmissionStatus,
     ValueOrigin,
     ValueState,
     WeekPeriod,
 )
-from domain.validation import Edit, has_blocking, validate_edits, validate_forecast
+from domain.validation import Edit, has_blocking, validate_edits, validate_forecast, validate_label_edits
 from services.auth_service import User
 from services.reference_data import ReferenceData
 from services.repository import AuditEvent, CommitRequest, ForecastRepository, ForecastState, RevisionInfo, new_id, utc_now
@@ -55,6 +56,10 @@ class Workspace:
     @property
     def lines_by_id(self) -> dict[str, Line]:
         return {ln.line_id: ln for ln in self.lines}
+
+    def label(self, line: Line) -> str:
+        """Entity-typed customer/project name if any, otherwise the template text."""
+        return self.state.labels.get(line.line_id) or line.label
 
 
 @dataclass
@@ -92,22 +97,35 @@ class ForecastService:
                                    set(state.head.carry_forward_reviewed) if state.head else set())
         return ws
 
-    def _validate(self, ws: Workspace, cells, ic, cf_reviewed: set[str]) -> list[Issue]:
+    def _validate(self, ws: Workspace, cells, ic, cf_reviewed: set[str],
+                  labels: dict[str, str] | None = None) -> list[Issue]:
         result = calculate(ws.lines, ws.calendar, cells)
-        return validate_forecast(ws.business_unit, ws.lines, ws.calendar, cells, result, ic,
-                                 ws.valid_counterparties, {p: v is not None for p, v in ws.fx_rates.items()},
-                                 cf_reviewed)
+        issues = validate_forecast(ws.business_unit, ws.lines, ws.calendar, cells, result, ic,
+                                   ws.valid_counterparties, {p: v is not None for p, v in ws.fx_rates.items()},
+                                   cf_reviewed)
+        labels = ws.state.labels if labels is None else labels
+        for ln in ws.lines:
+            if not is_nameable(ln.metric_code, ln.label):
+                continue
+            has_value = any(c.state == ValueState.ENTERED for (lid, _), c in cells.items() if lid == ln.line_id)
+            if has_value and is_placeholder_label(labels.get(ln.line_id) or ln.label):
+                issues.append(Issue(Severity.WARNING, "W_UNNAMED_LINE",
+                                    f"A line under '{METRICS[ln.metric_code].label}' has values but no customer / "
+                                    "project name", ws.business_unit, line_id=ln.line_id, metric_code=ln.metric_code))
+        return issues
 
     # ------------------------------------------------------------------ save
     def save(self, user: User, ws: Workspace, edits: list[Edit], ic_details: list[IcDetail] | None,
              comment: str, idempotency_key: str, carry_forward_reviewed: set[str] | None = None,
-             submit: bool = False) -> SaveOutcome:
+             submit: bool = False, label_edits: dict[str, str] | None = None) -> SaveOutcome:
         submitted = ws.status == SubmissionStatus.SUBMITTED
         user.require_edit(ws.business_unit, submitted)
         if submit and submitted:
             return SaveOutcome(None, [], "Forecast is already submitted.")
 
         ok, issues = validate_edits(edits, ws.lines_by_id, ws.calendar, ws.business_unit)
+        ok_labels, label_issues = validate_label_edits(label_edits or {}, ws.lines_by_id, ws.business_unit)
+        issues += label_issues
         if has_blocking(issues):
             return SaveOutcome(None, issues, "Nothing saved - fix the highlighted cells.")
 
@@ -136,6 +154,19 @@ class ForecastService:
                                     old.amount if old else None, value,
                                     old.state.value if old else "", new_state.value, change_type))
 
+        labels = dict(ws.state.labels)
+        for line_id, new_label in ok_labels.items():
+            line = ws.lines_by_id[line_id]
+            old_label = ws.label(line)
+            if new_label == old_label or (not new_label and line_id not in labels):
+                continue
+            if new_label:
+                labels[line_id] = new_label
+            else:
+                labels.pop(line_id, None)            # cleared -> back to the template text
+            audit.append(AuditEvent("", "", line_id, line.metric_code, None, None, "LABEL", "LABEL", change_type,
+                                    f"Name: '{old_label}' → '{new_label or line.label}'"))
+
         ic = list(ws.state.ic_details) if ic_details is None else list(ic_details)
         audit += self._ic_audit(ws, ic, user)
 
@@ -143,7 +174,7 @@ class ForecastService:
                           else (ws.state.head.carry_forward_reviewed if ws.state.head else set()))
         prev_cf = set(ws.state.head.carry_forward_reviewed) if ws.state.head else set()
 
-        forecast_issues = self._validate(ws, cells, ic, cf_reviewed)
+        forecast_issues = self._validate(ws, cells, ic, cf_reviewed, labels)
         if submit and has_blocking(forecast_issues):
             return SaveOutcome(None, forecast_issues, "Submit refused - resolve BLOCKING issues first.")
 
@@ -163,7 +194,8 @@ class ForecastService:
 
         rev = self.repo.commit(CommitRequest(
             ws.snapshot, ws.business_unit, ws.currency, ws.state.revision_no, kind, cells, ic, audit,
-            user.email, user.role, comment, idempotency_key, submission_id, frozenset(cf_reviewed)))
+            user.email, user.role, comment, idempotency_key, submission_id, frozenset(cf_reviewed),
+            labels=labels, metric_by_line={ln.line_id: ln.metric_code for ln in ws.lines}))
         msg = {RevisionKind.SUBMIT: "Forecast submitted", RevisionKind.HQ_ADJUSTMENT: "HQ adjustment saved"}.get(
             kind, "Draft saved")
         return SaveOutcome(rev, forecast_issues, f"{msg} – revision {rev.revision_no}.")

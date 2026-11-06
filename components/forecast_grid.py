@@ -1,39 +1,66 @@
-"""Hierarchical forecast grid (AgGrid) with per-cell editability and value-state styling.
+"""Forecast grid (AgGrid) styled after the entity Excel template "FC Vxxx".
 
-Pending (unsaved) edits live in st.session_state and are previewed through the
-same domain calculation engine that the server uses on save, so subtotals,
-cash balances and monthly totals update immediately.
+What users know from Excel and find here again:
+  * only light-yellow cells are inputs (#FFFFDE), everything else is calculated;
+  * values in thousands of local currency ("in kUSD"), switchable to full units;
+  * row texts, order and grouping of the template (CASH INFLOW / CASH OUTFLOW ...);
+  * grey subtotals (#F2F2F2), darker totals (#D9D9D9), tinted month columns (#E7E9EC);
+  * customer / project names are typed by the entity in the first column;
+  * AR/AP balances are entered once per month (weekly cells greyed out).
+
+Pending (unsaved) edits live in st.session_state and are previewed through the same
+domain calculation engine the server uses on save, so totals update immediately.
 """
 from __future__ import annotations
+
+from decimal import Decimal
 
 import pandas as pd
 
 from components import theme as T
 from domain.calc import ForecastResult, calculate, is_cell_editable
-from domain.metrics import METRICS, Aggregation, InputMode
+from domain.metrics import METRICS, Aggregation, InputMode, Section, is_nameable, is_placeholder_label
 from domain.models import InputCell, Provenance, RowType, ValueOrigin, ValueState, month_slot
 from domain.validation import AmountParseError, Edit, parse_amount
 from services.forecast_service import Workspace
 
-MONTH_NAMES = {"01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr", "05": "May", "06": "Jun", "07": "Jul",
-               "08": "Aug", "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec"}
-PendingEdits = dict[tuple[str, str], object]   # (line_id, field) -> raw user value
+MONTH_NAMES = {"01": "January", "02": "February", "03": "March", "04": "April", "05": "May", "06": "June",
+               "07": "July", "08": "August", "09": "September", "10": "October", "11": "November", "12": "December"}
+
+# (line_id, field) -> (raw text typed by the user, display scale at the time it was typed)
+PendingEdits = dict[tuple[str, str], tuple[object, int]]
+LabelEdits = dict[str, str]
+
+SECTION_TITLES = {Section.INFLOW: "CASH INFLOW", Section.OUTFLOW: "CASH OUTFLOW",
+                  Section.FINANCING: "FINANCING & CASH BALANCE", Section.BALANCES: "AR / AP BALANCES (month end)"}
+PLACEHOLDER_HINT = "＋ type customer / project name"
 
 
-def period_label(p: str) -> str:
-    return f"{MONTH_NAMES[p[4:]]} {p[:4]}"
+def period_label(p: str, short: bool = False) -> str:
+    name = MONTH_NAMES[p[4:]]
+    return f"{name[:3]} {p[:4]}" if short else f"{name} {p[:4]}"
+
+
+def unit_label(currency: str, scale: int) -> str:
+    return f"in k{currency}" if scale == 1000 else f"in {currency}"
+
+
+def to_storage(raw: object, scale: int) -> Decimal | None:
+    """User input in the display unit (e.g. thousands) -> full local-currency units."""
+    value = parse_amount(raw)
+    return None if value is None else value * scale
 
 
 def preview_cells(ws: Workspace, pending: PendingEdits) -> tuple[dict, dict[tuple[str, str], str]]:
     """Apply pending edits for preview. Returns cells and per-cell parse errors."""
     cells = dict(ws.state.cells)
     errors: dict[tuple[str, str], str] = {}
-    for (line_id, field), raw in pending.items():
+    for (line_id, field), (raw, scale) in pending.items():
         line = ws.lines_by_id.get(line_id)
         if line is None:
             continue
         try:
-            value = parse_amount(raw)
+            value = to_storage(raw, scale)
         except AmountParseError as exc:
             errors[(line_id, field)] = str(exc)
             continue
@@ -46,33 +73,46 @@ def preview_cells(ws: Workspace, pending: PendingEdits) -> tuple[dict, dict[tupl
     return cells, errors
 
 
-def _state_code(ws: Workspace, cells: dict, line, field: str, editable: bool, pending: PendingEdits,
-                errors: dict) -> str:
+def _has_values(cells: dict, line_id: str, pending: PendingEdits) -> bool:
+    if any(k[0] == line_id for k in pending):
+        return True
+    return any(c.state == ValueState.ENTERED for (lid, _), c in cells.items() if lid == line_id)
+
+
+def _row_kind(ln) -> str:
+    m = METRICS[ln.metric_code]
+    if ln.metric_code == "NET_CASH_MOVEMENT":
+        return "NCM"
+    if m.aggregation == Aggregation.MONTH_STATE:
+        return "ARAP"
+    return ln.row_type.value
+
+
+def _state_code(cells: dict, line, field: str, editable: bool, pending: PendingEdits, errors: dict) -> str:
+    m = METRICS[line.metric_code]
+    is_month = field.endswith("_M")
     if (line.line_id, field) in errors:
         return "ERR"
     if (line.line_id, field) in pending:
         return "PEND"
+    if m.aggregation == Aggregation.MONTH_STATE and not is_month:
+        return "NA"
     if not editable:
-        return "C"
+        return "CM" if is_month and line.row_type in (RowType.DETAIL, RowType.BALANCE) else "C"
     c = cells.get((line.line_id, field))
     if c is None or c.state == ValueState.MISSING:
-        return "M" if METRICS[line.metric_code].required else "B"
+        return "M" if m.required else "I"
     if c.origin == ValueOrigin.CARRY_FORWARD:
         return "CF"
     if c.origin == ValueOrigin.HQ_ADJUSTMENT:
         return "HQ"
-    return "I" if c.state == ValueState.ENTERED else "B"
-
-
-def _line_is_empty(ws: Workspace, cells: dict, line_id: str, pending: PendingEdits) -> bool:
-    """A detail line without any entered value and without pending edits (unused template row)."""
-    if any(k[0] == line_id for k in pending):
-        return False
-    return not any(c.state == ValueState.ENTERED for (lid, _), c in cells.items() if lid == line_id)
+    return "I"
 
 
 def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, pending: PendingEdits,
-                errors: dict, read_only: bool, show_empty: bool = False) -> tuple[pd.DataFrame, list[str]]:
+                errors: dict, read_only: bool, show_empty: bool = False, scale: int = 1000,
+                label_pending: LabelEdits | None = None) -> tuple[pd.DataFrame, list[str]]:
+    label_pending = label_pending or {}
     weeks_by_p: dict[str, list] = {}
     for w in ws.calendar:
         weeks_by_p.setdefault(w.code_period_value, []).append(w)
@@ -84,19 +124,25 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
 
     rows = []
     current_section = None
+    free_slot_shown: set[str] = set()
     for ln in ws.lines:
         m = METRICS[ln.metric_code]
-        if not show_empty and ln.row_type == RowType.DETAIL and m.input_mode == InputMode.LINE_INPUT \
-                and _line_is_empty(ws, cells, ln.line_id, pending):
-            continue
+        nameable = is_nameable(ln.metric_code, ln.label)
+        label = label_pending.get(ln.line_id, ws.label(ln))
+        placeholder = nameable and is_placeholder_label(label)
+        if nameable and placeholder and not _has_values(cells, ln.line_id, pending) and not show_empty:
+            # Excel has ~15 free slots per list; show only the first free one ("add a customer").
+            if read_only or ln.metric_code in free_slot_shown:
+                continue
+            free_slot_shown.add(ln.metric_code)
+
         if m.section != current_section:
             current_section = m.section
-            rows.append({"_line_id": f"__section__{m.section.name}", "_kind": "SECTION", "Line": m.section.value,
-                         "_editable": ""})
-        indent = {RowType.DETAIL: "      ", RowType.SUBTOTAL: "   "}.get(ln.row_type, "")
-        label = ln.label if ln.row_type == RowType.DETAIL else m.label
-        row = {"_line_id": ln.line_id, "_kind": ln.row_type.value, "Line": indent + label,
-               "_metric": m.label, "_row": ln.source_row}
+            rows.append({"_line_id": f"__section__{m.section.name}", "_kind": "SECTION",
+                         "Line": SECTION_TITLES[m.section], "_editable": "", "_label_ed": "", "_ph": ""})
+        row = {"_line_id": ln.line_id, "_kind": _row_kind(ln), "Line": "" if placeholder else label,
+               "_metric": m.label, "_label_ed": "1" if nameable and not read_only else "",
+               "_ph": "1" if placeholder else ""}
         editable_fields = []
         for f in fields:
             is_month = f.endswith("_M")
@@ -105,7 +151,6 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
                 amount = val.amount if val is not None and val.state == ValueState.ENTERED else None
             elif is_month:
                 mv = result.line_monthly[(ln.line_id, f[:6])]
-                # a detail line with no input in the month stays empty (empty is not zero)
                 amount = mv.amount if (ln.row_type != RowType.DETAIL or mv.has_input) else None
             else:
                 cv = result.line_weekly[(ln.line_id, f)]
@@ -113,11 +158,11 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
                 amount = cv.amount if ln.row_type != RowType.DETAIL or (c and c.state == ValueState.ENTERED) else None
             editable = (not read_only) and is_cell_editable(ln, f, ws.first_week) and (
                 m.aggregation == Aggregation.MONTH_STATE or not is_month)
-            if (ln.line_id, f) in pending and (ln.line_id, f) in errors:
-                row[f] = str(pending[(ln.line_id, f)])
+            if (ln.line_id, f) in errors:
+                row[f] = str(pending[(ln.line_id, f)][0])
             else:
-                row[f] = None if amount is None else float(amount)
-            row[f"_s_{f}"] = _state_code(ws, cells, ln, f, editable, pending, errors)
+                row[f] = None if amount is None else float(amount / scale)
+            row[f"_s_{f}"] = _state_code(cells, ln, f, editable, pending, errors)
             if editable:
                 editable_fields.append(f)
         row["_editable"] = ",".join(editable_fields)
@@ -125,44 +170,65 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
     return pd.DataFrame(rows), fields
 
 
+# ----------------------------------------------------------------------------- AgGrid options
 _FMT = """function(p){ if(p.value===null||p.value===undefined||p.value==='') return '';
   const n = Number(p.value); if (isNaN(n)) return String(p.value);
-  return n.toLocaleString('en-US',{minimumFractionDigits:0, maximumFractionDigits:2}); }"""
+  const d = (p.context && p.context.decimals !== undefined) ? p.context.decimals : 0;
+  return n.toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }"""
 _EDITABLE = "function(p){ return (',' + (p.data._editable||'') + ',').indexOf(',' + p.colDef.field + ',') >= 0; }"
-_ROW_CLASS = """function(p){ const k=p.data._kind; if(k==='SECTION') return 'r-section';
-  if(k==='TOTAL') return 'r-total'; if(k==='SUBTOTAL') return 'r-subtotal';
-  if(k==='BALANCE') return 'r-balance'; return ''; }"""
+_LABEL_EDITABLE = "function(p){ return p.data._label_ed === '1'; }"
+_LABEL_FMT = f"function(p){{ if(p.data._ph==='1' && !p.value) return '{PLACEHOLDER_HINT}'; return p.value; }}"
+_ROW_CLASS = """function(p){ const k=p.data._kind; return {SECTION:'r-section', TOTAL:'r-total', NCM:'r-ncm',
+  SUBTOTAL:'r-subtotal', BALANCE:'r-balance', ARAP:'r-arap', DETAIL:'r-detail'}[k] || ''; }"""
+_LABEL_CLASS = """function(p){ const c=['lbl-'+(p.data._kind||'')]; if(p.data._label_ed==='1') c.push('lbl-input');
+  if(p.data._ph==='1') c.push('lbl-ph'); return c; }"""
 
 
 def _cell_rules(field: str) -> dict:
     key = f"_s_{field}"
     rule = lambda code: f"(params.data['{key}']||'') === '{code}'"  # noqa: E731
-    return {"c-calc": rule("C"), "c-input": rule("I"), "c-blank": rule("B"), "c-missing": rule("M"),
-            "c-cf": rule("CF"), "c-hq": rule("HQ"), "c-pend": rule("PEND"), "c-err": rule("ERR")}
+    return {"c-calc": rule("C"), "c-calc-month": rule("CM"), "c-input": rule("I"), "c-missing": rule("M"),
+            "c-cf": rule("CF"), "c-hq": rule("HQ"), "c-pend": rule("PEND"), "c-err": rule("ERR"), "c-na": rule("NA")}
 
 
-_CSS = {
-    ".ag-root-wrapper": {"border": f"1px solid {T.BORDER} !important", "border-radius": "10px !important"},
-    ".ag-header": {"background-color": f"{T.BG} !important"},
-    ".ag-header-group-cell-label": {"font-weight": "650", "color": T.DARK_NAVY},
-    ".r-section": {"background-color": f"{T.DARK_NAVY} !important", "color": "#fff !important",
-                   "font-weight": "650"},
-    ".r-total": {"font-weight": "700", "border-top": f"1px solid {T.NAVY} !important"},
-    ".r-subtotal": {"font-weight": "600"},
-    ".r-balance": {"font-weight": "650", "color": T.DARK_NAVY},
-    ".c-calc": {"background-color": f"{T.CALC_BG} !important", "color": "#334155"},
-    ".c-input": {"background-color": f"{T.INPUT_BG} !important", "box-shadow": f"inset 0 0 0 1px {T.BORDER}"},
-    ".c-blank": {"background-color": f"{T.INPUT_BG} !important", "box-shadow": f"inset 0 0 0 1px {T.BORDER}"},
-    ".c-missing": {"background-color": f"{T.MISSING_BG} !important"},
-    ".c-cf": {"background-color": f"{T.CARRY_BG} !important"},
-    ".c-hq": {"background-color": f"{T.HQ_BG} !important"},
-    ".c-pend": {"background-color": "#DBEAFE !important", "font-weight": "650"},
-    ".c-err": {"background-color": f"{T.MISSING_BG} !important", "color": f"{T.NEGATIVE} !important"},
-    ".month-col": {"font-weight": "650"},
-}
+def grid_css() -> dict:
+    return {
+        ".ag-root-wrapper": {"border": f"1px solid {T.BORDER} !important", "border-radius": "10px !important",
+                             "font-family": "Arial, 'Source Sans Pro', sans-serif !important"},
+        ".ag-header": {"background-color": f"{T.CARD} !important", "border-bottom": f"1px solid {T.BORDER} !important"},
+        ".ag-header-group-cell": {"font-weight": "700", "color": f"{T.TEXT} !important"},
+        ".h-week": {"background-color": f"{T.XL_WEEK_HEAD} !important"},
+        ".h-month": {"background-color": f"{T.XL_MONTH} !important", "font-weight": "700"},
+        ".ag-row": {"border-color": f"{T.XL_GRID} !important"},
+        ".ag-cell": {"border-right": f"1px solid {T.XL_GRID} !important"},
+        # rows (Excel template hierarchy)
+        ".r-section": {"background-color": f"{T.CARD} !important"},
+        ".r-section .ag-cell": {"font-size": "14px", "font-weight": "700", "letter-spacing": ".03em",
+                                "border-right": "none !important", "border-top": f"2px solid {T.TEXT} !important"},
+        ".r-subtotal": {"background-color": f"{T.XL_SUBTOTAL} !important", "font-weight": "700"},
+        ".r-total": {"background-color": f"{T.XL_TOTAL} !important", "font-weight": "700", "font-size": "13px"},
+        ".r-ncm": {"background-color": f"{T.XL_TOTAL} !important", "font-weight": "700", "font-style": "italic",
+                   "font-size": "13px"},
+        ".r-balance": {"font-weight": "700"},
+        ".r-detail .lbl-DETAIL": {"font-style": "italic", "padding-left": "26px !important"},
+        ".lbl-ARAP": {"padding-left": "14px !important"},
+        ".lbl-input": {"background-color": f"{T.XL_INPUT} !important", "cursor": "text"},
+        ".lbl-ph": {"color": f"{T.MUTED} !important"},
+        # cells
+        ".c-input": {"background-color": f"{T.XL_INPUT} !important"},
+        ".c-calc": {"color": "#1F2937"},
+        ".c-calc-month": {"background-color": f"{T.XL_MONTH} !important", "font-weight": "600"},
+        ".c-missing": {"background-color": f"{T.XL_INPUT} !important",
+                       "box-shadow": f"inset 0 0 0 2px {T.NEGATIVE}"},
+        ".c-cf": {"background-color": f"{T.CARRY_BG} !important", "box-shadow": f"inset 0 0 0 1px {T.WARNING}"},
+        ".c-hq": {"background-color": f"{T.HQ_BG} !important"},
+        ".c-pend": {"background-color": f"{T.PENDING_BG} !important", "font-weight": "700"},
+        ".c-err": {"background-color": f"{T.MISSING_BG} !important", "color": f"{T.NEGATIVE} !important"},
+        ".c-na": {"background-color": f"{T.XL_NA} !important"},
+    }
 
 
-def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: str):
+def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: str, decimals: int):
     from st_aggrid import JsCode
 
     fmt, editable = JsCode(_FMT), JsCode(_EDITABLE)
@@ -171,49 +237,55 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
     def col(field: str) -> dict:
         is_month = field.endswith("_M")
         if is_month:
-            header = "Month" if view == "Weekly" else period_label(field[:6])
-            tip = f"{period_label(field[:6])} – derived from weeks (AR/AP: month-end balance input)"
+            header = MONTH_NAMES[field[4:6]]
+            tip = f"{period_label(field[:6])} – sum of the weeks (AR/AP: month-end balance input)"
         else:
             w = week_meta[field]
-            header = f"W{w.week_index}  {w.start.day}–{w.end.day}"
-            tip = f"{w.start:%d %b} – {w.end:%d %b %Y}" + ("  ·  calendar PROPOSED" if w.needs_confirmation else "")
+            header = f"{w.start.day}–{w.end.day}"
+            tip = f"W{w.week_index}: {w.start:%d %b} – {w.end:%d %b %Y}" + (
+                "  ·  calendar PROPOSED, to be confirmed by HQ" if w.needs_confirmation else "")
         return {"field": field, "headerName": header, "headerTooltip": tip, "type": "rightAligned",
-                "width": 118 if not is_month else 128, "editable": editable, "valueFormatter": fmt,
-                "cellClassRules": _cell_rules(field), "cellClass": "month-col" if is_month else "",
+                "width": 104 if not is_month else 116, "editable": editable, "valueFormatter": fmt,
+                "cellClassRules": _cell_rules(field), "headerClass": "h-month" if is_month else "h-week",
                 "singleClickEdit": True}
 
     groups, by_p = [], {}
     for f in fields:
         by_p.setdefault(f[:6], []).append(f)
     for p, fs in by_p.items():
-        cal_flag = " · proposed calendar" if any(week_meta.get(x) and week_meta[x].needs_confirmation for x in fs) else ""
-        groups.append({"headerName": period_label(p) + cal_flag, "children": [col(f) for f in fs]})
+        flag = " · proposed calendar" if any(week_meta.get(x) and week_meta[x].needs_confirmation for x in fs) else ""
+        groups.append({"headerName": period_label(p) + flag, "children": [col(f) for f in fs],
+                       "headerClass": "h-month" if view == "Monthly" else "h-week"})
 
-    hidden = [{"field": c, "hide": True} for c in frame.columns
-              if c.startswith("_") and c not in ("_metric",)]
+    hidden = [{"field": c, "hide": True} for c in frame.columns if c.startswith("_")]
     return {
-        "columnDefs": [{"field": "Line", "headerName": "Line item", "pinned": "left", "width": 330,
-                        "tooltipField": "_metric", "cellStyle": {"white-space": "pre"}}] + groups + hidden
-                      + [{"field": "_metric", "hide": True}],
+        "columnDefs": [{"field": "Line", "headerName": unit_label(ws.currency, 1000 if decimals == 0 else 1),
+                        "pinned": "left", "width": 360, "tooltipField": "_metric",
+                        "editable": JsCode(_LABEL_EDITABLE), "valueFormatter": JsCode(_LABEL_FMT),
+                        "cellClass": JsCode(_LABEL_CLASS), "singleClickEdit": True}] + groups + hidden,
         "defaultColDef": {"resizable": True, "sortable": False, "suppressMovable": True},
         "getRowClass": JsCode(_ROW_CLASS),
-        "rowHeight": 30, "headerHeight": 34, "groupHeaderHeight": 32,
+        "context": {"decimals": decimals},
+        "rowHeight": 28, "headerHeight": 34, "groupHeaderHeight": 32,
         "enableCellTextSelection": True, "stopEditingWhenCellsLoseFocus": True,
         "undoRedoCellEditing": True, "tooltipShowDelay": 300,
         "getRowId": JsCode("function(p){ return p.data._line_id; }"),
     }
 
 
-def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key: str, show_empty: bool = False
-           ) -> tuple[PendingEdits, ForecastResult, dict]:
-    """Draw the grid; return updated pending edits, preview result and parse errors."""
+def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key: str, show_empty: bool = False,
+           scale: int = 1000, label_pending: LabelEdits | None = None
+           ) -> tuple[PendingEdits, LabelEdits, ForecastResult, dict]:
+    """Draw the grid; return updated pending value edits, label edits, preview result and parse errors."""
     from st_aggrid import AgGrid
 
+    label_pending = dict(label_pending or {})
     cells, errors = preview_cells(ws, pending)
     result = calculate(ws.lines, ws.calendar, cells)
-    frame, fields = build_frame(ws, result, cells, view, pending, errors, read_only, show_empty)
-    resp = AgGrid(frame, gridOptions=grid_options(ws, frame, fields, view), allow_unsafe_jscode=True,
-                  custom_css=_CSS, height=min(36 + 30 * (len(frame) + 2), 760), theme="balham",
+    frame, fields = build_frame(ws, result, cells, view, pending, errors, read_only, show_empty, scale, label_pending)
+    decimals = 0 if scale > 1 else 2
+    resp = AgGrid(frame, gridOptions=grid_options(ws, frame, fields, view, decimals), allow_unsafe_jscode=True,
+                  custom_css=grid_css(), height=min(40 + 28 * (len(frame) + 2), 780), theme="balham",
                   update_on=["cellValueChanged"], key=key, fit_columns_on_grid_load=False,
                   data_return_mode="AS_INPUT")
     returned = resp.get("data") if isinstance(resp, dict) else getattr(resp, "data", None)
@@ -222,13 +294,17 @@ def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key
         returned = pd.DataFrame(returned).set_index("_line_id")
         original = frame.set_index("_line_id")
         for line_id, row in original.iterrows():
+            if row.get("_label_ed") == "1" and "Line" in returned.columns:
+                new_label = str(returned.at[line_id, "Line"] or "").strip()
+                if new_label != str(row.get("Line") or "").strip() and new_label != PLACEHOLDER_HINT:
+                    label_pending[line_id] = new_label
             allowed = set(filter(None, str(row.get("_editable", "")).split(",")))
             for f in allowed:
                 before, after = row.get(f), returned.at[line_id, f] if f in returned.columns else row.get(f)
                 if _same(before, after):
                     continue
-                new_pending[(line_id, f)] = after
-    return new_pending, result, errors
+                new_pending[(line_id, f)] = (after, scale)
+    return new_pending, label_pending, result, errors
 
 
 def _same(a, b) -> bool:
@@ -236,11 +312,19 @@ def _same(a, b) -> bool:
         if x is None or (isinstance(x, float) and pd.isna(x)) or (isinstance(x, str) and x.strip() == ""):
             return None
         try:
-            return float(x)
+            return round(float(x), 9)
         except (TypeError, ValueError):
             return str(x)
     return norm(a) == norm(b)
 
 
 def pending_to_edits(pending: PendingEdits) -> list[Edit]:
-    return [Edit(line_id, field, raw) for (line_id, field), raw in pending.items()]
+    """Convert display-unit input to full units; unparsable input is passed through for server-side rejection."""
+    edits = []
+    for (line_id, field), (raw, scale) in pending.items():
+        try:
+            value = to_storage(raw, scale)
+            edits.append(Edit(line_id, field, "" if value is None else format(value.normalize(), "f")))
+        except AmountParseError:
+            edits.append(Edit(line_id, field, raw))
+    return edits
