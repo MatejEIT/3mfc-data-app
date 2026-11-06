@@ -25,3 +25,12 @@ def test_where_sql_escapes_and_handles_lists():
     assert _where_sql({"A": "x'; DROP TABLE y; --"}) == " WHERE \"A\" = 'x''; DROP TABLE y; --'"
     assert _where_sql({"A": ["1", "2"]}) == " WHERE \"A\" IN ('1', '2')"
     assert _where_sql({"A": []}) == " WHERE 1=0"
+
+
+def test_per_revision_tables_are_insert_only():
+    for table in (S.REVISION, S.INPUT, S.IC_DETAIL, S.LINE_LABEL, S.AUDIT):
+        df = pd.DataFrame([{c: "x" for c in table.columns}])
+        st = upsert_statements("T", table, df)
+        assert all(s.startswith("INSERT INTO T") for s in st), table.name
+    st = upsert_statements("T", S.SUBMISSION, pd.DataFrame([{c: "x" for c in S.SUBMISSION.columns}]))
+    assert st[0].startswith("DELETE FROM T")       # mutable status row is still upserted

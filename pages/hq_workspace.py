@@ -103,8 +103,10 @@ with tab_snap:
                        "affected intervals are flagged in validations.")
     b1, b2 = st.columns(2)
     if b1.button("Create rolling snapshot", type="primary", disabled=not (latest and new_snap and bus)):
-        with st.spinner("Creating snapshot…"):
-            res = ctx.snapshots.create_rollover(user, new_snap, bus)
+        bar = st.progress(0.0, text="Creating snapshot…")
+        res = ctx.snapshots.create_rollover(
+            user, new_snap, bus, on_progress=lambda i, n, b: bar.progress((i - 1) / n, text=f"{b} ({i}/{n})"))
+        bar.empty()
         st.session_state.pop("snapshots", None)
         st.success(f"Created for {len(res.created)} entities.")
         if res.skipped:
@@ -112,8 +114,10 @@ with tab_snap:
     if b2.button("Initial import from Excel seed", disabled=not (new_snap and bus),
                  help="One-time: creates revision 1 from FT_3MFC_APP_WEEKLY_INPUT_SEED for entities without a "
                       "forecast in this snapshot."):
-        with st.spinner("Importing…"):
-            res = ctx.snapshots.import_initial(user, new_snap, bus)
+        bar = st.progress(0.0, text="Importing…")
+        res = ctx.snapshots.import_initial(
+            user, new_snap, bus, on_progress=lambda i, n, b: bar.progress((i - 1) / n, text=f"{b} ({i}/{n})"))
+        bar.empty()
         st.session_state.pop("snapshots", None)
         st.success(f"Imported {len(res.created)} entities.")
         if res.skipped:

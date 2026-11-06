@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 from decimal import Decimal
 
 import pandas as pd
@@ -75,13 +76,16 @@ class SnapshotService:
         self.repo = repo
         self.ref = ref
 
-    def import_initial(self, user: User, snapshot: str, business_units: list[str]) -> SnapshotRunResult:
+    def import_initial(self, user: User, snapshot: str, business_units: list[str],
+                       on_progress: Callable[[int, int, str], None] | None = None) -> SnapshotRunResult:
         """Create revision 1 of `snapshot` from the Excel seed. Never overwrites an existing forecast."""
         user.require_hq()
         res = SnapshotRunResult()
         calendar = self.ref.calendar(snapshot)
         ents = self.ref.entities().set_index("CODE_BUSINESS_UNIT")
-        for bu in business_units:
+        for i, bu in enumerate(business_units, 1):
+            if on_progress:
+                on_progress(i, len(business_units), bu)
             if self.repo.head(snapshot, bu) is not None:
                 res.skipped[bu] = "forecast already exists"
                 continue
@@ -100,14 +104,17 @@ class SnapshotService:
             res.created.append(bu)
         return res
 
-    def create_rollover(self, user: User, new_snapshot: str, business_units: list[str]) -> SnapshotRunResult:
+    def create_rollover(self, user: User, new_snapshot: str, business_units: list[str],
+                        on_progress: Callable[[int, int, str], None] | None = None) -> SnapshotRunResult:
         """Rolling 2+1 from the latest COMMITTED revision of the previous snapshot."""
         user.require_hq()
         prev_snapshot = next_period(new_snapshot, -1)
         prev_cal, new_cal = self.ref.calendar(prev_snapshot), self.ref.calendar(new_snapshot)
         ents = self.ref.entities().set_index("CODE_BUSINESS_UNIT")
         res = SnapshotRunResult()
-        for bu in business_units:
+        for i, bu in enumerate(business_units, 1):
+            if on_progress:
+                on_progress(i, len(business_units), bu)
             if self.repo.head(new_snapshot, bu) is not None:
                 res.skipped[bu] = "snapshot already exists"
                 continue

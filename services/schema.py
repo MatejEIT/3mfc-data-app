@@ -3,8 +3,10 @@
 All amounts are stored as TEXT: '' means blank/missing, '0' means an explicit
 zero. VALUE_STATE carries the semantic state explicitly as well.
 
-Every write is an incremental load (upsert on the primary key). Input and IC
-tables store the FULL input state per revision, keyed by WRITE_ID, so every
+Per-revision tables (REVISION, INPUT, IC_DETAIL, LINE_LABEL, AUDIT) get fresh keys
+on every save, so they are insert-only (no DELETE scan of a growing table). Mutable
+tables (SUBMISSION, CALENDAR, ...) are upserted (DELETE same key + INSERT). Input and
+IC tables store the FULL input state per revision, keyed by WRITE_ID, so every
 revision - in particular every SUBMITTED one - stays immutable and replayable.
 """
 from __future__ import annotations
@@ -26,6 +28,7 @@ REVISION = TableDef(
     ("REVISION_ID", "CODE_SNAPSHOT", "CODE_BUSINESS_UNIT", "REVISION_NO", "BASE_REVISION_NO", "REVISION_KIND",
      "STATUS", "WRITE_ID", "IDEMPOTENCY_KEY", "SUBMISSION_ID", "CHANGE_COUNT", "CREATED_BY", "CREATED_ROLE",
      "CREATED_AT_UTC", "COMMITTED_AT_UTC", "CALC_STATUS", "COMMENT", "CARRY_FORWARD_REVIEWED"),
+    append_only=True,   # new WRITE_ID / REVISION_ID per save -> insert only, no DELETE
 )
 
 INPUT = TableDef(
@@ -34,6 +37,7 @@ INPUT = TableDef(
     ("WRITE_ID", "REVISION_ID", "CODE_SNAPSHOT", "CODE_BUSINESS_UNIT", "CODE_PERIOD_VALUE", "CODE_WEEK_PERIOD",
      "LINE_ID", "METRIC_CODE", "AMOUNT_LCY", "CODE_CURRENCY", "VALUE_STATE", "VALUE_ORIGIN", "SOURCE_SNAPSHOT",
      "SOURCE_PERIOD", "SOURCE_WEEK", "SOURCE_LINE_ID", "SOURCE_REVISION_ID", "MODIFIED_BY", "MODIFIED_AT_UTC"),
+    append_only=True,   # new WRITE_ID / REVISION_ID per save -> insert only, no DELETE
 )
 
 LINE = TableDef(
@@ -49,6 +53,7 @@ IC_DETAIL = TableDef(
     ("WRITE_ID", "REVISION_ID", "DETAIL_ID", "CODE_SNAPSHOT", "CODE_BUSINESS_UNIT", "CODE_PERIOD_VALUE",
      "CODE_WEEK_PERIOD", "METRIC_CODE", "CODE_COUNTERPARTY_ENTITY", "AMOUNT_LCY", "CODE_CURRENCY", "VALUE_ORIGIN",
      "COMMENT", "MODIFIED_BY", "MODIFIED_AT_UTC"),
+    append_only=True,   # new WRITE_ID / REVISION_ID per save -> insert only, no DELETE
 )
 
 AUDIT = TableDef(
@@ -102,6 +107,7 @@ LINE_LABEL = TableDef(
     ("WRITE_ID", "LINE_ID"),
     ("WRITE_ID", "REVISION_ID", "CODE_SNAPSHOT", "CODE_BUSINESS_UNIT", "LINE_ID", "METRIC_CODE", "LINE_LABEL",
      "MODIFIED_BY", "MODIFIED_AT_UTC"),
+    append_only=True,   # new WRITE_ID / REVISION_ID per save -> insert only, no DELETE
 )
 
 USER_ACCESS = TableDef(
