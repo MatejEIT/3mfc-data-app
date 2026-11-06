@@ -25,7 +25,10 @@ if allowed.empty:
     st.warning("No entity is assigned to your account.")
     st.stop()
 labels = {r.CODE_BUSINESS_UNIT: f"{r.CODE_BUSINESS_UNIT} · {r.NAME_ENTITY}" for r in allowed.itertuples()}
-snapshots = ctx.repo.snapshots()
+# Session-cached: a cell edit reruns the whole page and must not hit Keboola.
+if "snapshots" not in st.session_state:
+    st.session_state["snapshots"] = ctx.repo.snapshots()
+snapshots = st.session_state["snapshots"]
 
 c1, c2, c3 = st.columns([3, 1.4, 1.6])
 bu = c1.selectbox("Entity", list(labels), format_func=labels.get, key="sel_bu")
@@ -40,6 +43,8 @@ ws_key, pend_key, ic_key, idem_key = f"ws::{ns}", f"pending::{ns}", f"ic::{ns}",
 
 
 def load_workspace(force: bool = False):
+    if force:
+        st.session_state.pop("snapshots", None)        # refresh the snapshot list with the forecast
     if force or ws_key not in st.session_state:
         with st.spinner("Loading forecast…"):
             st.session_state[ws_key] = ctx.forecasts.open(user, snapshot, bu)
@@ -79,10 +84,10 @@ if read_only:
 st.markdown(" ".join(chips), unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ grid
-u1, u2, u3 = st.columns([4.2, 1.2, 1.4])
-unit = u2.segmented_control("Unit", [f"k{ws.currency}", ws.currency], default=f"k{ws.currency}",
-                            key=f"unit::{ns}", label_visibility="collapsed") or f"k{ws.currency}"
-scale = 1000 if unit.startswith("k") else 1
+# Always thousands of local currency, exactly like the Excel template ("in kUSD").
+scale = 1000
+unit = f"k{ws.currency}"
+u1, u3 = st.columns([5.4, 1.4])
 show_empty = u3.toggle("All template rows", value=False, key=f"show_empty::{ns}",
                        help="The Excel template has ~15 free rows per customer / project list. Only the first free "
                             "row of each list is shown ('＋ type customer / project name'); switch on to see all.")
@@ -186,7 +191,7 @@ if parse_errors:
     st.error("Some values are not valid numbers: " + "; ".join(sorted(set(parse_errors.values())))[:500])
 
 # ------------------------------------------------------------------ details
-tab_val, tab_ic, tab_tools, tab_hist = st.tabs(["Validations", "IC counterparties", "Bulk tools", "History"])
+tab_val, tab_ic, tab_tools, tab_hist = st.tabs(["Validations", "IC counterparties", "Paste from Excel", "History"])
 
 with tab_val:
     issues = st.session_state.get("last_issues") or ws.issues
@@ -250,7 +255,7 @@ with tab_tools:
     if read_only:
         st.info("Forecast is read-only.")
     else:
-        st.markdown("**Paste from Excel** – copy a block of numbers (rows × intervals) and choose where it starts.")
+        st.markdown(f"Copy a block of numbers in **{unit}** from Excel (rows × weeks) and choose where it starts.")
         input_lines = [ln for ln in ws.lines if ln.row_type.value == "DETAIL"]
         t1, t2 = st.columns(2)
         start_line = t1.selectbox("First line", [ln.line_id for ln in input_lines],
@@ -269,21 +274,12 @@ with tab_tools:
             st.session_state[pend_key] = pending
             st.session_state["flash"] = ("info", f"{added} values staged – review the grid and save.")
             st.rerun()
-        st.divider()
-        st.markdown("**Copy an interval** – copies all input lines from one interval to another (staged, not saved).")
-        s1, s2, s3 = st.columns([1, 1, 1])
-        src = s1.selectbox("From", week_codes, key=f"cp_src::{ns}")
-        dst = s2.selectbox("To", week_codes, index=min(1, len(week_codes) - 1), key=f"cp_dst::{ns}")
-        if s3.button("Copy values", disabled=src == dst):
-            for ln in input_lines:
-                c = ws.state.cells.get((ln.line_id, src))
-                stored = "" if c is None or c.amount is None else str(c.amount.quantize(Decimal("0.01")))
-                pending[(ln.line_id, dst)] = pending.get((ln.line_id, src), (stored, 1))
-            st.session_state[pend_key] = pending
-            st.rerun()
 
 with tab_hist:
-    audit = ctx.repo.audit(snapshot, bu)
+    hist_key = f"audit::{ns}::{ws.state.revision_no}"           # loaded once per revision, not on every edit
+    if hist_key not in st.session_state:
+        st.session_state[hist_key] = ctx.repo.audit(snapshot, bu)
+    audit = st.session_state[hist_key]
     if audit.empty:
         st.caption("No changes recorded yet.")
     else:

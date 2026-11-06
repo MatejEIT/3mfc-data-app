@@ -9,7 +9,7 @@ import streamlit as st
 from services.auth_service import User, resolve_user
 from services.config import Settings, load_settings, storage_token
 from services.forecast_service import ForecastService
-from services.keboola_client import Gateway, InMemoryGateway, KeboolaGateway
+from services.keboola_client import Gateway, InMemoryGateway, KeboolaGateway, read_app
 from services.reference_data import ReferenceData
 from services.repository import ForecastRepository
 from services import schema as S
@@ -45,7 +45,7 @@ def get_context() -> AppContext:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _access_table() -> "object":
-    return get_context().gateway.read_app(S.USER_ACCESS)
+    return read_app(get_context().gateway, S.USER_ACCESS)
 
 
 def current_user() -> User | None:

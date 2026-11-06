@@ -17,7 +17,9 @@ except AccessDenied as exc:
     st.stop()
 
 entities = ctx.ref.entities()
-snapshots = ctx.repo.snapshots()
+if "snapshots" not in st.session_state:
+    st.session_state["snapshots"] = ctx.repo.snapshots()
+snapshots = st.session_state["snapshots"]
 
 tab_status, tab_compare, tab_snap = st.tabs(["Submission status", "Submitted vs current", "Snapshots"])
 
@@ -61,19 +63,25 @@ with tab_compare:
         else:
             bu = c2.selectbox("Entity", list(submitted["CODE_BUSINESS_UNIT"]), key="cmp_bu")
             row = submitted[submitted["CODE_BUSINESS_UNIT"] == bu].iloc[0]
-            revs = ctx.repo.revisions(snap, bu)
-            sub_rev = next(r for r in revs if r.revision_id == row["SUBMITTED_REVISION_ID"])
-            ws = ctx.forecasts.open(user, snap, bu)
-            diff = ctx.forecasts.diff_revisions(ws, ctx.repo.load_state(snap, bu, sub_rev), ws.state)
-            st.caption(f"Submitted revision **{sub_rev.revision_no}** by {sub_rev.created_by} · current revision "
-                       f"**{ws.state.revision_no}**")
-            if not diff:
-                st.success("No changes since submission.")
-            else:
-                df = pd.DataFrame(diff)
-                for c in ("Submitted", "Current", "Difference"):
-                    df[c] = df[c].map(lambda v: None if v is None else float(v))
-                st.dataframe(df, hide_index=True, width="stretch")
+            cmp_key = f"cmp::{snap}::{bu}::{row['CURRENT_REVISION_ID']}"
+            if cmp_key not in st.session_state and st.button("Compare submitted vs current", type="primary"):
+                with st.spinner("Loading both revisions…"):
+                    revs = ctx.repo.revisions(snap, bu)
+                    sub_rev = next(r for r in revs if r.revision_id == row["SUBMITTED_REVISION_ID"])
+                    ws = ctx.forecasts.open(user, snap, bu)
+                    st.session_state[cmp_key] = (sub_rev, ws.state.revision_no, ctx.forecasts.diff_revisions(
+                        ws, ctx.repo.load_state(snap, bu, sub_rev), ws.state))
+            if cmp_key in st.session_state:
+                sub_rev, current_no, diff = st.session_state[cmp_key]
+                st.caption(f"Submitted revision **{sub_rev.revision_no}** by {sub_rev.created_by} · current revision "
+                           f"**{current_no}**")
+                if not diff:
+                    st.success("No changes since submission.")
+                else:
+                    df = pd.DataFrame(diff)
+                    for c in ("Submitted", "Current", "Difference"):
+                        df[c] = df[c].map(lambda v: None if v is None else float(v))
+                    st.dataframe(df, hide_index=True, width="stretch")
 
 with tab_snap:
     st.markdown("**Create the next rolling snapshot (2+1).** Months 1–2 roll over from the previous snapshot's "
@@ -97,6 +105,7 @@ with tab_snap:
     if b1.button("Create rolling snapshot", type="primary", disabled=not (latest and new_snap and bus)):
         with st.spinner("Creating snapshot…"):
             res = ctx.snapshots.create_rollover(user, new_snap, bus)
+        st.session_state.pop("snapshots", None)
         st.success(f"Created for {len(res.created)} entities.")
         if res.skipped:
             st.warning("Skipped: " + "; ".join(f"{k}: {v}" for k, v in res.skipped.items()))
@@ -105,6 +114,7 @@ with tab_snap:
                       "forecast in this snapshot."):
         with st.spinner("Importing…"):
             res = ctx.snapshots.import_initial(user, new_snap, bus)
+        st.session_state.pop("snapshots", None)
         st.success(f"Imported {len(res.created)} entities.")
         if res.skipped:
             st.warning("Skipped: " + "; ".join(f"{k}: {v}" for k, v in res.skipped.items()))
