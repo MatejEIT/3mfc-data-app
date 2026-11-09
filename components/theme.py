@@ -56,7 +56,7 @@ _CSS = f"""
   .chip-warn {{ background:#FEF3C7; border-color:#FDE68A; color:#92400E; }}
   .chip-bad {{ background:#FEE2E2; border-color:#FECACA; color:{NEGATIVE}; }}
   .chip-info {{ background:#E0E7FF; border-color:#C7D2FE; color:{DARK_NAVY}; }}
-  .kpi {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px; padding:14px 16px; height:100%; }}
+  .kpi {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px; padding:12px 16px; box-sizing:border-box; }}
   .kpi-label {{ font-size:12px; color:{MUTED}; text-transform:uppercase; letter-spacing:.04em; }}
   .kpi-value {{ font-size:22px; font-weight:650; color:{TEXT}; margin-top:4px; font-variant-numeric: tabular-nums; }}
   .kpi-foot {{ font-size:12px; color:{MUTED}; margin-top:2px; }}
@@ -65,7 +65,7 @@ _CSS = f"""
                           margin-right:6px; vertical-align:-1px; border:1px solid {BORDER}; background:var(--c); }}
   /* page blocks: control panel (light blue), work area (white card), details (collapsed) */
   .st-key-ctl_panel {{ background:{PRIMARY_TINT}; border:1px solid #CFE3FB; border-radius:12px;
-                       padding:14px 18px 10px 18px; margin-bottom:6px; }}
+                       padding:14px 18px 16px 18px; margin-bottom:6px; }}
   .st-key-work_area {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px;
                        padding:16px 18px 14px 18px; margin-bottom:6px; }}
   .st-key-details {{ margin-top:4px; }}
