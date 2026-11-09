@@ -68,3 +68,9 @@ def test_one_month_at_a_time_keeps_grid_narrow(snapshot_service, forecast_servic
     _, fields = build_frame(ws, result, cells, "Monthly", {}, errors, read_only=False,
                             periods=["202610", "202611", "202612"])
     assert fields == ["202610_M", "202611_M", "202612_M"]
+
+
+def test_cell_color_rules_use_ag_grid_expression_scope():
+    from components.forecast_grid import _cell_rules
+    rules = _cell_rules("202610_W1")
+    assert all("data['_s_202610_W1']" in expr and "params" not in expr for expr in rules.values())

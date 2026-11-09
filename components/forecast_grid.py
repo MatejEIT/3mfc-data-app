@@ -190,7 +190,8 @@ _LABEL_CLASS = """function(p){ const c=['lbl-'+(p.data._kind||'')]; if(p.data._l
 
 def _cell_rules(field: str) -> dict:
     key = f"_s_{field}"
-    rule = lambda code: f"(params.data['{key}']||'') === '{code}'"  # noqa: E731
+    # AG Grid evaluates string expressions with `data`, `x`, `node`... in scope (there is no `params`)
+    rule = lambda code: f"(data['{key}']||'') === '{code}'"  # noqa: E731
     return {"c-calc": rule("C"), "c-calc-month": rule("CM"), "c-input": rule("I"), "c-missing": rule("M"),
             "c-cf": rule("CF"), "c-hq": rule("HQ"), "c-pend": rule("PEND"), "c-err": rule("ERR"), "c-na": rule("NA")}
 
@@ -204,7 +205,9 @@ def grid_css() -> dict:
         ".h-week": {"background-color": f"{T.XL_WEEK_HEAD} !important"},
         ".h-month": {"background-color": f"{T.XL_MONTH} !important", "font-weight": "700"},
         ".ag-row": {"border-color": f"{T.XL_GRID} !important"},
-        ".ag-cell": {"border-right": f"1px solid {T.XL_GRID} !important"},
+        ".ag-cell": {"border-right": f"1px solid {T.XL_GRID} !important", "padding-left": "6px !important",
+                     "padding-right": "6px !important"},
+        ".ag-header-cell": {"padding-left": "6px !important", "padding-right": "6px !important"},
         # rows (Excel template hierarchy)
         ".r-section": {"background-color": f"{T.CARD} !important"},
         ".r-section .ag-cell": {"font-size": "14px", "font-weight": "700", "letter-spacing": ".03em",
@@ -241,7 +244,7 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
     def col(field: str) -> dict:
         is_month = field.endswith("_M")
         if is_month:
-            header = MONTH_NAMES[field[4:6]]
+            header = "Total" if view == "Weekly" else MONTH_NAMES[field[4:6]]   # month name is in the group header
             tip = f"{period_label(field[:6])} – sum of the weeks (AR/AP: month-end balance input)"
         else:
             w = week_meta[field]
@@ -249,7 +252,7 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
             tip = f"W{w.week_index}: {w.start:%d %b} – {w.end:%d %b %Y}" + (
                 "  ·  calendar PROPOSED, to be confirmed by HQ" if w.needs_confirmation else "")
         return {"field": field, "headerName": header, "headerTooltip": tip, "type": "rightAligned",
-                "width": 100 if not is_month else 118, "editable": editable, "valueFormatter": fmt,
+                "flex": 1, "minWidth": 64 if not is_month else 76, "editable": editable, "valueFormatter": fmt,
                 "cellClassRules": _cell_rules(field), "headerClass": "h-month" if is_month else "h-week",
                 "singleClickEdit": True}
 
@@ -264,7 +267,7 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
     hidden = [{"field": c, "hide": True} for c in frame.columns if c.startswith("_")]
     return {
         "columnDefs": [{"field": "Line", "headerName": unit_label(ws.currency, 1000 if decimals == 0 else 1),
-                        "pinned": "left", "width": 310, "tooltipField": "_metric",
+                        "pinned": "left", "width": 270, "minWidth": 200, "tooltipField": "Line",
                         "editable": JsCode(_LABEL_EDITABLE), "valueFormatter": JsCode(_LABEL_FMT),
                         "cellClass": JsCode(_LABEL_CLASS), "singleClickEdit": True}] + groups + hidden,
         "defaultColDef": {"resizable": True, "sortable": False, "suppressMovable": True},

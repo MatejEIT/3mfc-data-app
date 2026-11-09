@@ -47,16 +47,19 @@ with panel:
     bu = c1.selectbox("Company", list(labels), format_func=labels.get, key="sel_bu")
     snapshot = c2.selectbox("Snapshot", snapshots, key="sel_snapshot")
     months = snapshot_periods(snapshot)
-    period_opts = [G.period_label(p, short=True) for p in months] + ["3 months"]
-    period_choice = c3.segmented_control("Month", period_opts, default=period_opts[0], key=f"sel_period::{snapshot}",
-                                         help="Weeks are edited month by month. '3 months' shows the monthly totals "
-                                              "of the whole horizon.") or period_opts[0]
+    ALL, TOTALS = "All weeks", "Month totals"
+    period_opts = [ALL] + [G.period_label(p, short=True) for p in months] + [TOTALS]
+    period_choice = c3.segmented_control("Show", period_opts, default=ALL, key=f"sel_period::{snapshot}",
+                                         help="All weeks of the 3 months, a single month (bigger columns), or only "
+                                              "the monthly totals.") or ALL
     status_slot = st.empty()
 
-if period_choice == "3 months":
+if period_choice == ALL:
+    view, visible = "Weekly", months
+elif period_choice == TOTALS:
     view, visible = "Monthly", months
 else:
-    view, visible = "Weekly", [months[period_opts.index(period_choice)]]
+    view, visible = "Weekly", [months[period_opts.index(period_choice) - 1]]
 
 ns = f"{snapshot}::{bu}"
 ws_key, pend_key, ic_key, idem_key, lbl_key = (f"ws::{ns}", f"pending::{ns}", f"ic::{ns}", f"idem::{ns}",
@@ -106,7 +109,8 @@ status_slot.markdown(" ".join(chips), unsafe_allow_html=True)
 # =========================================================================== 2. work area
 work = st.container(key="work_area")
 with work:
-    title = labels[bu] + " · " + ("3-month overview" if view == "Monthly" else G.period_label(visible[0]))
+    title = labels[bu] + " · " + ("month totals" if view == "Monthly" else
+                                  G.period_label(visible[0]) if len(visible) == 1 else "all weeks")
     T.block_title(title, "Edit the light-yellow cells; totals and cash balances update immediately. "
                          "Nothing is stored until you click Save." if not read_only else
                          "This forecast is read-only for you.")
