@@ -57,3 +57,14 @@ def test_month_of_unused_line_is_empty_not_zero(snapshot_service, forecast_servi
     f, _ = _frame(ws)
     v = f.loc["L_TAXES", "202610_M"]
     assert v is None or v != v                                 # None / NaN, never 0
+
+
+def test_one_month_at_a_time_keeps_grid_narrow(snapshot_service, forecast_service, hq):
+    ws = _ws(snapshot_service, forecast_service, hq)
+    cells, errors = preview_cells(ws, {})
+    result = calculate(ws.lines, ws.calendar, cells)
+    _, fields = build_frame(ws, result, cells, "Weekly", {}, errors, read_only=False, periods=["202611"])
+    assert fields == ["202611_W1", "202611_W2", "202611_W3", "202611_W4", "202611_M"]      # 5 columns, not 15
+    _, fields = build_frame(ws, result, cells, "Monthly", {}, errors, read_only=False,
+                            periods=["202610", "202611", "202612"])
+    assert fields == ["202610_M", "202611_M", "202612_M"]

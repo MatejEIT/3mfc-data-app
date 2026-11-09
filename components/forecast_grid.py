@@ -111,13 +111,17 @@ def _state_code(cells: dict, line, field: str, editable: bool, pending: PendingE
 
 def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, pending: PendingEdits,
                 errors: dict, read_only: bool, show_empty: bool = False, scale: int = 1000,
-                label_pending: LabelEdits | None = None) -> tuple[pd.DataFrame, list[str]]:
+                label_pending: LabelEdits | None = None, periods: list[str] | None = None
+                ) -> tuple[pd.DataFrame, list[str]]:
+    """`periods` limits the visible months (one month at a time keeps the grid narrow)."""
     label_pending = label_pending or {}
     weeks_by_p: dict[str, list] = {}
     for w in ws.calendar:
         weeks_by_p.setdefault(w.code_period_value, []).append(w)
     fields: list[str] = []
     for p in result.periods:
+        if periods and p not in periods:
+            continue
         if view == "Weekly":
             fields += [w.code_week_period for w in weeks_by_p[p]]
         fields.append(month_slot(p))
@@ -245,7 +249,7 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
             tip = f"W{w.week_index}: {w.start:%d %b} – {w.end:%d %b %Y}" + (
                 "  ·  calendar PROPOSED, to be confirmed by HQ" if w.needs_confirmation else "")
         return {"field": field, "headerName": header, "headerTooltip": tip, "type": "rightAligned",
-                "width": 104 if not is_month else 116, "editable": editable, "valueFormatter": fmt,
+                "width": 100 if not is_month else 118, "editable": editable, "valueFormatter": fmt,
                 "cellClassRules": _cell_rules(field), "headerClass": "h-month" if is_month else "h-week",
                 "singleClickEdit": True}
 
@@ -260,7 +264,7 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
     hidden = [{"field": c, "hide": True} for c in frame.columns if c.startswith("_")]
     return {
         "columnDefs": [{"field": "Line", "headerName": unit_label(ws.currency, 1000 if decimals == 0 else 1),
-                        "pinned": "left", "width": 360, "tooltipField": "_metric",
+                        "pinned": "left", "width": 310, "tooltipField": "_metric",
                         "editable": JsCode(_LABEL_EDITABLE), "valueFormatter": JsCode(_LABEL_FMT),
                         "cellClass": JsCode(_LABEL_CLASS), "singleClickEdit": True}] + groups + hidden,
         "defaultColDef": {"resizable": True, "sortable": False, "suppressMovable": True},
@@ -274,7 +278,7 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
 
 
 def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key: str, show_empty: bool = False,
-           scale: int = 1000, label_pending: LabelEdits | None = None
+           scale: int = 1000, label_pending: LabelEdits | None = None, periods: list[str] | None = None
            ) -> tuple[PendingEdits, LabelEdits, ForecastResult, dict]:
     """Draw the grid; return updated pending value edits, label edits, preview result and parse errors."""
     from st_aggrid import AgGrid
@@ -282,7 +286,8 @@ def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key
     label_pending = dict(label_pending or {})
     cells, errors = preview_cells(ws, pending)
     result = calculate(ws.lines, ws.calendar, cells)
-    frame, fields = build_frame(ws, result, cells, view, pending, errors, read_only, show_empty, scale, label_pending)
+    frame, fields = build_frame(ws, result, cells, view, pending, errors, read_only, show_empty, scale, label_pending,
+                                periods)
     decimals = 0 if scale > 1 else 2
     resp = AgGrid(frame, gridOptions=grid_options(ws, frame, fields, view, decimals), allow_unsafe_jscode=True,
                   custom_css=grid_css(), height=min(40 + 28 * (len(frame) + 2), 780), theme="balham",

@@ -1,4 +1,10 @@
-"""Forecast Editor – the main working screen (weekly first, monthly derived)."""
+"""Forecast Editor – the main working screen.
+
+Layout (kept deliberately simple):
+  1. control panel  – entity, snapshot, month, forecast status
+  2. work area      – key figures, the grid (one month at a time), save / submit
+  3. details        – validations, IC split, paste from Excel, history (collapsed)
+"""
 from __future__ import annotations
 
 import uuid
@@ -9,6 +15,7 @@ import streamlit as st
 
 from components import forecast_grid as G
 from components import theme as T
+from domain.calendar import snapshot_periods
 from domain.metrics import IC_SPLIT_METRIC
 from domain.models import IcDetail, Severity, SubmissionStatus, ValueOrigin
 from services.auth_service import AccessDenied
@@ -17,29 +24,43 @@ from services.repository import RevisionConflict
 
 ctx = get_context()
 user = require_user()
+SCALE = 1000                     # always thousands of local currency, like the Excel template
 
-# ------------------------------------------------------------------ selection
 entities = ctx.ref.entities()
 allowed = entities if user.is_hq else entities[entities["CODE_BUSINESS_UNIT"].isin(user.business_units)]
 if allowed.empty:
     st.warning("No entity is assigned to your account.")
     st.stop()
 labels = {r.CODE_BUSINESS_UNIT: f"{r.CODE_BUSINESS_UNIT} · {r.NAME_ENTITY}" for r in allowed.itertuples()}
-# Session-cached: a cell edit reruns the whole page and must not hit Keboola.
-if "snapshots" not in st.session_state:
+if "snapshots" not in st.session_state:          # session-cached: cell edits must not hit Keboola
     st.session_state["snapshots"] = ctx.repo.snapshots()
 snapshots = st.session_state["snapshots"]
-
-c1, c2, c3 = st.columns([3, 1.4, 1.6])
-bu = c1.selectbox("Entity", list(labels), format_func=labels.get, key="sel_bu")
 if not snapshots:
-    st.info("No forecast snapshot exists yet. HQ creates the first snapshot in **HQ Workspace › Snapshots**.")
+    st.info("No forecast snapshot exists yet. HQ creates the first snapshot in **HQ Workspace**.")
     st.stop()
-snapshot = c2.selectbox("Snapshot", snapshots, key="sel_snapshot")
-view = c3.segmented_control("View", ["Weekly", "Monthly"], default="Weekly", key="sel_view") or "Weekly"
+
+# =========================================================================== 1. control panel
+panel = st.container(key="ctl_panel")
+with panel:
+    T.block_title("Select forecast", "Choose the company, the forecast snapshot and the month you want to work on.")
+    c1, c2, c3 = st.columns([2.6, 1.1, 2.6])
+    bu = c1.selectbox("Company", list(labels), format_func=labels.get, key="sel_bu")
+    snapshot = c2.selectbox("Snapshot", snapshots, key="sel_snapshot")
+    months = snapshot_periods(snapshot)
+    period_opts = [G.period_label(p, short=True) for p in months] + ["3 months"]
+    period_choice = c3.segmented_control("Month", period_opts, default=period_opts[0], key=f"sel_period::{snapshot}",
+                                         help="Weeks are edited month by month. '3 months' shows the monthly totals "
+                                              "of the whole horizon.") or period_opts[0]
+    status_slot = st.empty()
+
+if period_choice == "3 months":
+    view, visible = "Monthly", months
+else:
+    view, visible = "Weekly", [months[period_opts.index(period_choice)]]
 
 ns = f"{snapshot}::{bu}"
-ws_key, pend_key, ic_key, idem_key = f"ws::{ns}", f"pending::{ns}", f"ic::{ns}", f"idem::{ns}"
+ws_key, pend_key, ic_key, idem_key, lbl_key = (f"ws::{ns}", f"pending::{ns}", f"ic::{ns}", f"idem::{ns}",
+                                                f"labels::{ns}")
 
 
 def load_workspace(force: bool = False):
@@ -56,236 +77,252 @@ try:
 except AccessDenied as exc:
     st.error(str(exc))
     st.stop()
-
 if ws.state.head is None:
     st.info(f"No forecast for {labels[bu]} in snapshot {snapshot}.")
     st.stop()
 
-lbl_key = f"labels::{ns}"
 pending: dict = st.session_state.setdefault(pend_key, {})
 label_pending: dict = st.session_state.setdefault(lbl_key, {})
 ic_rows: list[IcDetail] = st.session_state.setdefault(ic_key, list(ws.state.ic_details))
 submitted = ws.status == SubmissionStatus.SUBMITTED
 read_only = not user.can_edit(bu, submitted)
+unit = f"k{ws.currency}"
+issues = st.session_state.get(f"issues::{ns}") or ws.issues
+n_block = sum(i.severity == Severity.BLOCKING for i in issues)
+n_warn = sum(i.severity == Severity.WARNING for i in issues)
 
-# ------------------------------------------------------------------ status bar
-status_chip = T.chip("SUBMITTED", "ok") if submitted else T.chip("DRAFT", "warn")
-fx_missing = [p for p, v in ws.fx_rates.items() if v is None]
-chips = [
-    T.chip(f"LCY {ws.currency}"),
-    T.chip(f"FX {ws.fx_reference}", "bad" if fx_missing else ""),
-    status_chip,
-    T.chip(f"Revision {ws.state.revision_no} · {ws.state.head.kind.value}", "info"),
-]
+chips = [T.chip("SUBMITTED", "ok") if submitted else T.chip("DRAFT – not submitted yet", "warn"),
+         T.chip(f"Values in {unit}"),
+         T.chip(f"FX {ws.fx_reference}", "bad" if any(v is None for v in ws.fx_rates.values()) else ""),
+         T.chip(f"Revision {ws.state.revision_no}", "info")]
+if n_block:
+    chips.append(T.chip(f"{n_block} blocking issue(s) – see Validations below", "bad"))
 if pending or label_pending:
     chips.append(T.chip(f"{len(pending) + len(label_pending)} unsaved change(s)", "warn"))
 if read_only:
-    chips.append(T.chip("read-only", ""))
-st.markdown(" ".join(chips), unsafe_allow_html=True)
+    chips.append(T.chip("read-only"))
+status_slot.markdown(" ".join(chips), unsafe_allow_html=True)
 
-# ------------------------------------------------------------------ grid
-# Always thousands of local currency, exactly like the Excel template ("in kUSD").
-scale = 1000
-unit = f"k{ws.currency}"
-u1, u3 = st.columns([5.4, 1.4])
-show_empty = u3.toggle("All template rows", value=False, key=f"show_empty::{ns}",
-                       help="The Excel template has ~15 free rows per customer / project list. Only the first free "
-                            "row of each list is shown ('＋ type customer / project name'); switch on to see all.")
-with u1:
-    T.instructions(ws.currency, scale)
-T.legend()
-new_pending, new_labels, preview, parse_errors = G.render(
-    ws, view, pending, read_only, key=f"grid::{ns}::{ws.state.revision_no}::{view}::{show_empty}::{scale}",
-    show_empty=show_empty, scale=scale, label_pending=label_pending)
-if new_pending != pending or new_labels != label_pending:
-    st.session_state[pend_key] = new_pending
-    st.session_state[lbl_key] = new_labels
-    st.rerun()
+# =========================================================================== 2. work area
+work = st.container(key="work_area")
+with work:
+    title = labels[bu] + " · " + ("3-month overview" if view == "Monthly" else G.period_label(visible[0]))
+    T.block_title(title, "Edit the light-yellow cells; totals and cash balances update immediately. "
+                         "Nothing is stored until you click Save." if not read_only else
+                         "This forecast is read-only for you.")
 
-# ------------------------------------------------------------------ KPI strip
-first_p, last_p = preview.periods[0], preview.periods[-1]
-opening = preview.kpi("OPENING_CASH_BALANCE", first_p)
-closing = preview.kpi("CLOSING_CASH_BALANCE", last_p)
-net = sum((preview.kpi("NET_CASH_MOVEMENT", p) or Decimal(0)) for p in preview.periods)
-weekly_closing = [preview.metric_weekly[("CLOSING_CASH_BALANCE", w.code_week_period)].amount for w in preview.weeks]
-lowest = min((v for v in weekly_closing if v is not None), default=None)
-def _k(v):
-    return None if v is None else v / scale
+    # key figures of the whole horizon (live preview incl. unsaved changes)
+    kpi_slot = st.container()
 
-
-k = st.columns(4)
-k[0].markdown(T.kpi_card("Opening cash", T.fmt_money(_k(opening)), f"{unit} · {G.period_label(first_p)}"),
-              unsafe_allow_html=True)
-k[1].markdown(T.kpi_card("Net cash movement", T.fmt_money(_k(net)), f"{unit} · 3-month horizon",
-                         "neg" if net < 0 else "pos"), unsafe_allow_html=True)
-k[2].markdown(T.kpi_card("Closing cash", T.fmt_money(_k(closing)), f"{unit} · {G.period_label(last_p)}"),
-              unsafe_allow_html=True)
-k[3].markdown(T.kpi_card("Lowest weekly cash", T.fmt_money(_k(lowest)), f"{unit} · across 12 intervals",
-                         "neg" if lowest is not None and lowest < 0 else ""), unsafe_allow_html=True)
-
-# ------------------------------------------------------------------ actions
-cf_periods = sorted({c.code_period_value for c in ws.state.cells.values() if c.origin == ValueOrigin.CARRY_FORWARD})
-reviewed = set(ws.state.head.carry_forward_reviewed)
-if cf_periods and not read_only:
-    for p in cf_periods:
-        ok = st.checkbox(f"I have reviewed the carry-forward estimate for {G.period_label(p)}",
-                         value=p in reviewed, key=f"cf::{ns}::{p}")
-        reviewed = reviewed | {p} if ok else reviewed - {p}
-
-
-def _save(submit: bool, comment: str) -> None:
-    key = st.session_state.setdefault(idem_key, uuid.uuid4().hex)
-    try:
-        with st.spinner("Validating and saving…"):
-            out = ctx.forecasts.save(user, ws, G.pending_to_edits(pending), ic_rows, comment, key,
-                                     reviewed, submit=submit, label_edits=label_pending)
-    except RevisionConflict as exc:
-        st.session_state["flash"] = ("error", f"{exc} Your unsaved changes are kept – click **Reload latest**.")
-        return
-    except AccessDenied as exc:
-        st.session_state["flash"] = ("error", str(exc))
-        return
-    st.session_state["last_issues"] = out.issues
-    if out.revision is None:
-        st.session_state["flash"] = ("warning", out.message)
-        return
-    for k_ in (pend_key, lbl_key, ic_key, idem_key):
-        st.session_state.pop(k_, None)
-    load_workspace(force=True)
-    st.session_state["flash"] = ("success", out.message)
-
-
-@st.dialog("Submit forecast")
-def confirm_submit() -> None:
-    st.write(f"Submit **{labels[bu]}** for snapshot **{snapshot}**? After submission the forecast is read-only "
-             "for the entity; HQ can still adjust it (every change is audited).")
-    comment = st.text_area("Comment (optional)", key="submit_comment")
-    if st.button("Submit forecast", type="primary"):
-        _save(True, comment)
+    i1, i2 = st.columns([5.2, 1.3])
+    with i1:
+        T.instructions(ws.currency, SCALE)
+    show_empty = i2.toggle("All template rows", value=False, key=f"show_empty::{ns}",
+                           help="Only the first free customer / project row of each list is shown. "
+                                "Switch on to see all ~15 rows of the Excel template.")
+    new_pending, new_labels, preview, parse_errors = G.render(
+        ws, view, pending, read_only,
+        key=f"grid::{ns}::{ws.state.revision_no}::{view}::{'-'.join(visible)}::{show_empty}",
+        show_empty=show_empty, scale=SCALE, label_pending=label_pending, periods=visible)
+    if new_pending != pending or new_labels != label_pending:
+        st.session_state[pend_key] = new_pending
+        st.session_state[lbl_key] = new_labels
         st.rerun()
+    T.legend()
 
+    first_p, last_p = preview.periods[0], preview.periods[-1]
+    opening = preview.kpi("OPENING_CASH_BALANCE", first_p)
+    closing = preview.kpi("CLOSING_CASH_BALANCE", last_p)
+    net = sum((preview.kpi("NET_CASH_MOVEMENT", p) or Decimal(0)) for p in preview.periods)
+    lowest = min((v for v in (preview.metric_weekly[("CLOSING_CASH_BALANCE", w.code_week_period)].amount
+                              for w in preview.weeks) if v is not None), default=None)
 
-if not read_only:
-    a1, a2, a3, a4, a5 = st.columns([3.2, 1.1, 1.3, 1.1, 1.1])
-    comment = a1.text_input("Change comment", placeholder="Reason for the change (stored in audit log)",
-                            label_visibility="collapsed")
-    if a2.button("Save draft" if not user.is_hq else "Save", type="secondary", disabled=bool(parse_errors),
-                 width="stretch"):
-        _save(False, comment)
-        st.rerun()
-    if not submitted and a3.button("Submit forecast", type="primary", disabled=bool(parse_errors),
-                                   width="stretch"):
-        confirm_submit()
-    if a4.button("Discard", disabled=not (pending or label_pending), width="stretch"):
-        for k_ in (pend_key, lbl_key, ic_key):
+    def _k(v):
+        return None if v is None else v / SCALE
+
+    with kpi_slot:
+        k = st.columns(4)
+        k[0].markdown(T.kpi_card("Opening cash", T.fmt_money(_k(opening)), f"{unit} · {G.period_label(first_p)}"),
+                      unsafe_allow_html=True)
+        k[1].markdown(T.kpi_card("Net cash movement", T.fmt_money(_k(net)), f"{unit} · 3 months",
+                                 "neg" if net < 0 else "pos"), unsafe_allow_html=True)
+        k[2].markdown(T.kpi_card("Closing cash", T.fmt_money(_k(closing)), f"{unit} · {G.period_label(last_p)}"),
+                      unsafe_allow_html=True)
+        k[3].markdown(T.kpi_card("Lowest weekly cash", T.fmt_money(_k(lowest)), f"{unit} · 12 weeks",
+                                 "neg" if lowest is not None and lowest < 0 else ""), unsafe_allow_html=True)
+        st.write("")
+
+    # carry-forward confirmation (only when the snapshot contains a pre-filled month)
+    cf_periods = sorted({c.code_period_value for c in ws.state.cells.values()
+                         if c.origin == ValueOrigin.CARRY_FORWARD})
+    reviewed = set(ws.state.head.carry_forward_reviewed)
+    if cf_periods and not read_only:
+        for p in cf_periods:
+            ok = st.checkbox(f"I have reviewed {G.period_label(p)} (pre-filled from the previous month)",
+                             value=p in reviewed, key=f"cf::{ns}::{p}")
+            reviewed = reviewed | {p} if ok else reviewed - {p}
+
+    def _save(submit: bool, comment: str) -> None:
+        key = st.session_state.setdefault(idem_key, uuid.uuid4().hex)
+        try:
+            with st.spinner("Validating and saving…"):
+                out = ctx.forecasts.save(user, ws, G.pending_to_edits(pending), ic_rows, comment, key,
+                                         reviewed, submit=submit, label_edits=label_pending)
+        except RevisionConflict as exc:
+            st.session_state["flash"] = ("error", f"{exc} Your unsaved changes are kept – click **Reload**.")
+            return
+        except AccessDenied as exc:
+            st.session_state["flash"] = ("error", str(exc))
+            return
+        st.session_state[f"issues::{ns}"] = out.issues
+        if out.revision is None:
+            st.session_state["flash"] = ("warning", out.message)
+            st.session_state[f"open_val::{ns}"] = True
+            return
+        for k_ in (pend_key, lbl_key, ic_key, idem_key):
             st.session_state.pop(k_, None)
-        st.rerun()
-    if a5.button("Reload latest", width="stretch"):
         load_workspace(force=True)
-        st.rerun()
+        st.session_state["flash"] = ("success", out.message)
 
-flash = st.session_state.pop("flash", None)
-if flash:
-    getattr(st, flash[0])(flash[1])
-if parse_errors:
-    st.error("Some values are not valid numbers: " + "; ".join(sorted(set(parse_errors.values())))[:500])
+    @st.dialog("Submit forecast")
+    def confirm_submit() -> None:
+        st.write(f"Submit **{labels[bu]}** for snapshot **{snapshot}**? After submission the forecast is "
+                 "read-only for you; HQ can still adjust it (every change is recorded).")
+        comment = st.text_area("Comment (optional)", key="submit_comment")
+        if st.button("Submit forecast", type="primary"):
+            _save(True, comment)
+            st.rerun()
 
-# ------------------------------------------------------------------ details
-tab_val, tab_ic, tab_tools, tab_hist = st.tabs(["Validations", "IC counterparties", "Paste from Excel", "History"])
+    if not read_only:
+        a1, a2, a3, a4, a5 = st.columns([3.0, 1.1, 1.4, 1.0, 1.0])
+        comment = a1.text_input("Comment", placeholder="Optional comment for this change",
+                                label_visibility="collapsed")
+        if a2.button("Save" if user.is_hq else "Save draft", disabled=bool(parse_errors), width="stretch"):
+            _save(False, comment)
+            st.rerun()
+        if not submitted and a3.button("Submit forecast", type="primary", disabled=bool(parse_errors),
+                                       width="stretch"):
+            confirm_submit()
+        if a4.button("Discard", disabled=not (pending or label_pending), width="stretch",
+                     help="Throw away all unsaved changes"):
+            for k_ in (pend_key, lbl_key, ic_key):
+                st.session_state.pop(k_, None)
+            st.rerun()
+        if a5.button("Reload", width="stretch", help="Load the latest saved version"):
+            load_workspace(force=True)
+            st.rerun()
 
-with tab_val:
-    issues = st.session_state.get("last_issues") or ws.issues
-    if not issues:
-        st.success("No validation issues.")
-    else:
-        sev_order = {Severity.BLOCKING: 0, Severity.WARNING: 1, Severity.INFO: 2}
-        df = pd.DataFrame([{"Severity": i.severity.value, "Code": i.code, "Message": i.message,
-                            "Period": i.period, "Interval": i.week}
-                           for i in sorted(issues, key=lambda i: (sev_order[i.severity], i.period, i.week))])
-        n_block = (df["Severity"] == "BLOCKING").sum()
-        st.caption(f"{n_block} blocking · {(df['Severity'] == 'WARNING').sum()} warnings. "
-                   "Blocking issues prevent SUBMIT, not saving a draft.")
-        st.dataframe(df, hide_index=True, width="stretch")
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        getattr(st, flash[0])(flash[1])
+    if parse_errors:
+        st.error("Some values are not valid numbers: " + "; ".join(sorted(set(parse_errors.values())))[:500])
 
-with tab_ic:
-    st.caption("Split of **IC outflow – other VI group** (template row 89) by counterparty. The split must "
-               "equal the main line in every interval before SUBMIT. IC elimination in consolidation is "
-               "**not active** – business rules are not yet agreed.")
+# =========================================================================== 3. details (collapsed)
+details = st.container(key="details")
+with details:
+    val_title = "Validations · " + (f"{n_block} blocking, {n_warn} warnings" if issues else "all OK")
+    with st.expander(val_title, expanded=bool(st.session_state.pop(f"open_val::{ns}", False))):
+        st.caption("Blocking issues prevent Submit (a draft can always be saved). Warnings are for information.")
+        if not issues:
+            st.success("No validation issues.")
+        else:
+            order = {Severity.BLOCKING: 0, Severity.WARNING: 1, Severity.INFO: 2}
+            st.dataframe(pd.DataFrame([{"Severity": i.severity.value, "Message": i.message, "Month": i.period,
+                                        "Week": i.week}
+                                       for i in sorted(issues, key=lambda i: (order[i.severity], i.period, i.week))]),
+                         hide_index=True, width="stretch")
+
     ic_line = next((ln for ln in ws.lines if ln.metric_code == IC_SPLIT_METRIC), None)
     week_codes = [w.code_week_period for w in ws.calendar]
-    cps = sorted(c for c in ws.valid_counterparties if c != bu)
-    ic_df = pd.DataFrame([{"Interval": d.code_week_period, "Counterparty": d.counterparty, "Amount LCY": float(d.amount),
-                           "Comment": d.comment, "_id": d.detail_id} for d in ic_rows],
-                         columns=["Interval", "Counterparty", "Amount LCY", "Comment", "_id"])
-    edited = st.data_editor(
-        ic_df, num_rows="dynamic" if not read_only else "fixed", disabled=read_only, hide_index=True,
-        width="stretch", key=f"ic_editor::{ns}::{ws.state.revision_no}",
-        column_config={
-            "Interval": st.column_config.SelectboxColumn(options=week_codes, required=True),
-            "Counterparty": st.column_config.SelectboxColumn(options=cps, required=True),
-            "Amount LCY": st.column_config.NumberColumn(format="%.2f", required=True),
-            "_id": None,
-        })
-    new_ic = []
-    for r in edited.to_dict("records"):
-        amount = r.get("Amount LCY")
-        if not r.get("Interval") or not r.get("Counterparty") or amount is None or pd.isna(amount):
-            continue
-        did = r.get("_id") if isinstance(r.get("_id"), str) and r.get("_id") else uuid.uuid4().hex
-        new_ic.append(IcDetail(did, r["Interval"][:6], r["Interval"], r["Counterparty"],
-                               Decimal(str(amount)).quantize(Decimal("0.01")), r.get("Comment") or "",
-                               ValueOrigin.HQ_ADJUSTMENT if user.is_hq else ValueOrigin.MANUAL))
-    if [(d.code_week_period, d.counterparty, d.amount, d.comment) for d in new_ic] != \
-            [(d.code_week_period, d.counterparty, d.amount, d.comment) for d in ic_rows]:
-        st.session_state[ic_key] = new_ic
-        ic_rows = new_ic
+    unallocated = 0
     if ic_line:
-        rec = []
         for w in week_codes:
             main = preview.line_weekly[(ic_line.line_id, w)].amount or Decimal(0)
             split = sum((d.amount for d in ic_rows if d.code_week_period == w), Decimal(0))
-            if main or split:
-                rec.append({"Interval": w, "Main line": float(main), "Allocated": float(split),
-                            "Unallocated": float(main - split), "Status": "OK" if abs(main - split) <= Decimal("0.01")
-                            else "UNALLOCATED"})
-        if rec:
-            st.dataframe(pd.DataFrame(rec), hide_index=True, width="stretch")
+            unallocated += abs(main - split) > Decimal("0.01")
+    with st.expander("Intercompany counterparties (IC other VI-group)"
+                     + (f" · {unallocated} week(s) not allocated" if unallocated else "")):
+        st.caption("Split the line 'IC (other VI-group)' by counterparty company. The split must equal the line "
+                   "in every week before Submit. Amounts in full local currency.")
+        cps = sorted(c for c in ws.valid_counterparties if c != bu)
+        ic_df = pd.DataFrame([{"Week": d.code_week_period, "Counterparty": d.counterparty,
+                               "Amount": float(d.amount), "Comment": d.comment, "_id": d.detail_id} for d in ic_rows],
+                             columns=["Week", "Counterparty", "Amount", "Comment", "_id"])
+        edited = st.data_editor(
+            ic_df, num_rows="dynamic" if not read_only else "fixed", disabled=read_only, hide_index=True,
+            width="stretch", key=f"ic_editor::{ns}::{ws.state.revision_no}",
+            column_config={"Week": st.column_config.SelectboxColumn(options=week_codes, required=True),
+                           "Counterparty": st.column_config.SelectboxColumn(options=cps, required=True),
+                           "Amount": st.column_config.NumberColumn(f"Amount {ws.currency}", format="%.2f",
+                                                                   required=True),
+                           "_id": None})
+        new_ic = []
+        for r in edited.to_dict("records"):
+            amount = r.get("Amount")
+            if not r.get("Week") or not r.get("Counterparty") or amount is None or pd.isna(amount):
+                continue
+            did = r.get("_id") if isinstance(r.get("_id"), str) and r.get("_id") else uuid.uuid4().hex
+            new_ic.append(IcDetail(did, r["Week"][:6], r["Week"], r["Counterparty"],
+                                   Decimal(str(amount)).quantize(Decimal("0.01")), r.get("Comment") or "",
+                                   ValueOrigin.HQ_ADJUSTMENT if user.is_hq else ValueOrigin.MANUAL))
+        if [(d.code_week_period, d.counterparty, d.amount, d.comment) for d in new_ic] != \
+                [(d.code_week_period, d.counterparty, d.amount, d.comment) for d in ic_rows]:
+            st.session_state[ic_key] = new_ic
+            ic_rows = new_ic
+        if ic_line:
+            rec = []
+            for w in week_codes:
+                main = preview.line_weekly[(ic_line.line_id, w)].amount or Decimal(0)
+                split = sum((d.amount for d in ic_rows if d.code_week_period == w), Decimal(0))
+                if main or split:
+                    rec.append({"Week": w, "Line": float(main), "Allocated": float(split),
+                                "Not allocated": float(main - split),
+                                "Status": "OK" if abs(main - split) <= Decimal("0.01") else "NOT ALLOCATED"})
+            if rec:
+                st.dataframe(pd.DataFrame(rec), hide_index=True, width="stretch")
 
-with tab_tools:
-    if read_only:
-        st.info("Forecast is read-only.")
-    else:
-        st.markdown(f"Copy a block of numbers in **{unit}** from Excel (rows × weeks) and choose where it starts.")
-        input_lines = [ln for ln in ws.lines if ln.row_type.value == "DETAIL"]
-        t1, t2 = st.columns(2)
-        start_line = t1.selectbox("First line", [ln.line_id for ln in input_lines],
-                                  format_func=lambda i: ws.label(ws.lines_by_id[i]), key=f"bp_line::{ns}")
-        start_week = t2.selectbox("First interval", week_codes, key=f"bp_week::{ns}")
-        block = st.text_area("Values (tab separated, one line item per row)", key=f"bp_text::{ns}", height=120)
-        if st.button("Apply pasted values", disabled=not block.strip()):
-            li = [ln.line_id for ln in input_lines].index(start_line)
-            wi = week_codes.index(start_week)
-            added = 0
-            for r_off, text_row in enumerate(block.strip("\n").splitlines()):
-                for c_off, raw in enumerate(text_row.split("\t")):
-                    if li + r_off < len(input_lines) and wi + c_off < len(week_codes):
-                        pending[(input_lines[li + r_off].line_id, week_codes[wi + c_off])] = (raw.strip(), scale)
-                        added += 1
-            st.session_state[pend_key] = pending
-            st.session_state["flash"] = ("info", f"{added} values staged – review the grid and save.")
-            st.rerun()
+    if not read_only:
+        with st.expander("Paste from Excel"):
+            st.caption(f"Copy a block of numbers in {unit} from Excel (rows × weeks), choose where it starts and "
+                       "apply. The values appear in the grid as unsaved changes.")
+            input_lines = [ln for ln in ws.lines if ln.row_type.value == "DETAIL"]
+            t1, t2 = st.columns(2)
+            start_line = t1.selectbox("First row", [ln.line_id for ln in input_lines],
+                                      format_func=lambda i: ws.label(ws.lines_by_id[i]), key=f"bp_line::{ns}")
+            start_week = t2.selectbox("First week", week_codes, key=f"bp_week::{ns}")
+            block = st.text_area("Values (tab separated, one row per line)", key=f"bp_text::{ns}", height=110)
+            if st.button("Apply pasted values", disabled=not block.strip()):
+                li = [ln.line_id for ln in input_lines].index(start_line)
+                wi = week_codes.index(start_week)
+                added = 0
+                for r_off, text_row in enumerate(block.strip("\n").splitlines()):
+                    for c_off, raw in enumerate(text_row.split("\t")):
+                        if li + r_off < len(input_lines) and wi + c_off < len(week_codes):
+                            pending[(input_lines[li + r_off].line_id, week_codes[wi + c_off])] = (raw.strip(), SCALE)
+                            added += 1
+                st.session_state[pend_key] = pending
+                st.session_state["flash"] = ("info", f"{added} values staged – review the grid and save.")
+                st.rerun()
 
-with tab_hist:
-    hist_key = f"audit::{ns}::{ws.state.revision_no}"           # loaded once per revision, not on every edit
-    if hist_key not in st.session_state:
-        st.session_state[hist_key] = ctx.repo.audit(snapshot, bu)
-    audit = st.session_state[hist_key]
-    if audit.empty:
-        st.caption("No changes recorded yet.")
-    else:
-        names = {ln.line_id: ws.label(ln) for ln in ws.lines}
-        view_df = audit.assign(Line=audit["LINE_ID"].map(names).fillna(audit["LINE_ID"].str[:10]))
-        view_df = view_df.sort_values("CHANGED_AT_UTC", ascending=False)[
-            ["CHANGED_AT_UTC", "CHANGED_BY", "CHANGED_ROLE", "CHANGE_TYPE", "REVISION_ID", "CODE_WEEK_PERIOD", "Line",
-             "OLD_VALUE_LCY", "NEW_VALUE_LCY", "COMMENT"]]
-        st.dataframe(view_df, hide_index=True, width="stretch", height=360)
+    with st.expander("Change history"):
+        st.caption("Every saved change: who, when, old and new value (in full local currency).")
+        hist_key = f"audit::{ns}::{ws.state.revision_no}"
+        if hist_key not in st.session_state:
+            if st.button("Show history"):                 # loaded on demand, once per revision
+                st.session_state[hist_key] = ctx.repo.audit(snapshot, bu)
+                st.rerun()
+        else:
+            audit = st.session_state[hist_key]
+            if audit.empty:
+                st.caption("No changes recorded yet.")
+            else:
+                names = {ln.line_id: ws.label(ln) for ln in ws.lines}
+                view_df = audit.assign(Row=audit["LINE_ID"].map(names).fillna(""))
+                view_df = view_df.sort_values("CHANGED_AT_UTC", ascending=False)[
+                    ["CHANGED_AT_UTC", "CHANGED_BY", "CHANGE_TYPE", "CODE_WEEK_PERIOD", "Row",
+                     "OLD_VALUE_LCY", "NEW_VALUE_LCY", "COMMENT"]].rename(columns={
+                        "CHANGED_AT_UTC": "When (UTC)", "CHANGED_BY": "Who", "CHANGE_TYPE": "Type",
+                        "CODE_WEEK_PERIOD": "Week", "OLD_VALUE_LCY": "Old", "NEW_VALUE_LCY": "New",
+                        "COMMENT": "Comment"})
+                st.dataframe(view_df, hide_index=True, width="stretch", height=320)

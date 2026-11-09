@@ -47,8 +47,9 @@ IDL rate type `SK (BS)` of the month **before** the snapshot, applied to all thr
 
 ### Intercompany
 Only *IC outflow – other VI group* (template row 89) is split by counterparty; the split must equal the line
-in every interval. **IC elimination rules are not agreed yet** – the official consolidation does not eliminate IC;
-any "IC eliminated" figure is a clearly labelled simulation.
+in every interval. As in the consolidation workbook, the **official group figures eliminate intercompany flows**
+(IC receipts and IC outflows are left out of group inflow / outflow); the non-eliminated view is shown for
+reconciliation only.
 
 ### Process
 No approval workflow: entities save drafts and **SUBMIT**. The submitted revision is stored immutably.

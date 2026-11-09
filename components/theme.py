@@ -63,6 +63,16 @@ _CSS = f"""
   .legend {{ display:flex; flex-wrap:wrap; gap:14px; font-size:12px; color:{MUTED}; margin:6px 0 10px; }}
   .legend span::before {{ content:""; display:inline-block; width:11px; height:11px; border-radius:3px;
                           margin-right:6px; vertical-align:-1px; border:1px solid {BORDER}; background:var(--c); }}
+  /* page blocks: control panel (light blue), work area (white card), details (collapsed) */
+  .st-key-ctl_panel {{ background:{PRIMARY_TINT}; border:1px solid #CFE3FB; border-radius:12px;
+                       padding:14px 18px 10px 18px; margin-bottom:6px; }}
+  .st-key-work_area {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px;
+                       padding:16px 18px 14px 18px; margin-bottom:6px; }}
+  .st-key-details {{ margin-top:4px; }}
+  .st-key-details details {{ background:{CARD}; border:1px solid {BORDER} !important; border-radius:10px !important; }}
+  .st-key-details summary p {{ font-weight:600; }}
+  .blk-title {{ font-size:15.5px; font-weight:650; color:{TEXT}; margin:0 0 2px 0; }}
+  .blk-sub {{ font-size:12.5px; color:{MUTED}; margin:0 0 10px 0; }}
   .itis-instr {{ background:{XL_INPUT}; border:1px solid #EFE7A0; border-left:4px solid {PRIMARY};
                  border-radius:8px; padding:9px 14px; font-size:13px; color:{TEXT}; margin:4px 0 8px; }}
   div[data-testid="stMetric"] {{ background:{CARD}; border:1px solid {BORDER}; border-radius:12px; padding:12px 14px; }}
@@ -88,6 +98,12 @@ def header(user_email: str, role: str, context: str = "") -> None:
     )
 
 
+def block_title(title: str, subtitle: str = "") -> None:
+    """Title + one-line description at the top of a page block."""
+    sub = f'<div class="blk-sub">{html.escape(subtitle)}</div>' if subtitle else ""
+    st.markdown(f'<div class="blk-title">{html.escape(title)}</div>{sub}', unsafe_allow_html=True)
+
+
 def chip(text: str, kind: str = "") -> str:
     return f'<span class="itis-chip chip-{kind}">{html.escape(text)}</span>'
 
@@ -108,11 +124,10 @@ def legend() -> None:
 
 
 def instructions(currency: str, scale: int) -> None:
-    unit = f"thousands of {currency} (k{currency})" if scale == 1000 else f"full {currency}"
+    unit = f"k{currency}" if scale == 1000 else currency
     st.markdown(
-        f'<div class="itis-instr"><b>Please fill only light-yellow cells.</b> Values in {html.escape(unit)} · '
-        'weekly intervals are the input, months are calculated · type customer / project names directly in the '
-        'first column · empty is not zero – leave a cell empty only if there is nothing to report.</div>',
+        f'<div class="itis-instr"><b>Please fill only light-yellow cells</b> · values in {html.escape(unit)} · '
+        'customer / project names are typed in the first column · months are calculated from the weeks.</div>',
         unsafe_allow_html=True)
 
 
