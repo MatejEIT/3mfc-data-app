@@ -3,7 +3,7 @@
 Layout (kept deliberately simple):
   1. control panel  – entity, snapshot, month, forecast status
   2. work area      – key figures, the grid (one month at a time), save / submit
-  3. details        – validations, IC split, paste from Excel, history (collapsed)
+  3. details        – validations, paste from Excel, history (collapsed)
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import streamlit as st
 from components import forecast_grid as G
 from components import theme as T
 from domain.calendar import snapshot_periods
-from domain.metrics import IC_SPLIT_METRIC
 from domain.models import IcDetail, Severity, SubmissionStatus, ValueOrigin
 from services.auth_service import AccessDenied
 from services.bootstrap import get_context, require_user
@@ -237,54 +236,7 @@ with details:
                                        for i in sorted(issues, key=lambda i: (order[i.severity], i.period, i.week))]),
                          hide_index=True, width="stretch")
 
-    ic_line = next((ln for ln in ws.lines if ln.metric_code == IC_SPLIT_METRIC), None)
     week_codes = [w.code_week_period for w in ws.calendar]
-    unallocated = 0
-    if ic_line:
-        for w in week_codes:
-            main = preview.line_weekly[(ic_line.line_id, w)].amount or Decimal(0)
-            split = sum((d.amount for d in ic_rows if d.code_week_period == w), Decimal(0))
-            unallocated += abs(main - split) > Decimal("0.01")
-    with st.expander("Intercompany counterparties (IC other VI-group)"
-                     + (f" · {unallocated} week(s) not allocated" if unallocated else "")):
-        st.caption("Split the line 'IC (other VI-group)' by counterparty company. The split must equal the line "
-                   "in every week before Submit. Amounts in full local currency.")
-        cps = sorted(c for c in ws.valid_counterparties if c != bu)
-        ic_df = pd.DataFrame([{"Week": d.code_week_period, "Counterparty": d.counterparty,
-                               "Amount": float(d.amount), "Comment": d.comment, "_id": d.detail_id} for d in ic_rows],
-                             columns=["Week", "Counterparty", "Amount", "Comment", "_id"])
-        edited = st.data_editor(
-            ic_df, num_rows="dynamic" if not read_only else "fixed", disabled=read_only, hide_index=True,
-            width="stretch", key=f"ic_editor::{ns}::{ws.state.revision_no}",
-            column_config={"Week": st.column_config.SelectboxColumn(options=week_codes, required=True),
-                           "Counterparty": st.column_config.SelectboxColumn(options=cps, required=True),
-                           "Amount": st.column_config.NumberColumn(f"Amount {ws.currency}", format="%.2f",
-                                                                   required=True),
-                           "_id": None})
-        new_ic = []
-        for r in edited.to_dict("records"):
-            amount = r.get("Amount")
-            if not r.get("Week") or not r.get("Counterparty") or amount is None or pd.isna(amount):
-                continue
-            did = r.get("_id") if isinstance(r.get("_id"), str) and r.get("_id") else uuid.uuid4().hex
-            new_ic.append(IcDetail(did, r["Week"][:6], r["Week"], r["Counterparty"],
-                                   Decimal(str(amount)).quantize(Decimal("0.01")), r.get("Comment") or "",
-                                   ValueOrigin.HQ_ADJUSTMENT if user.is_hq else ValueOrigin.MANUAL))
-        if [(d.code_week_period, d.counterparty, d.amount, d.comment) for d in new_ic] != \
-                [(d.code_week_period, d.counterparty, d.amount, d.comment) for d in ic_rows]:
-            st.session_state[ic_key] = new_ic
-            ic_rows = new_ic
-        if ic_line:
-            rec = []
-            for w in week_codes:
-                main = preview.line_weekly[(ic_line.line_id, w)].amount or Decimal(0)
-                split = sum((d.amount for d in ic_rows if d.code_week_period == w), Decimal(0))
-                if main or split:
-                    rec.append({"Week": w, "Line": float(main), "Allocated": float(split),
-                                "Not allocated": float(main - split),
-                                "Status": "OK" if abs(main - split) <= Decimal("0.01") else "NOT ALLOCATED"})
-            if rec:
-                st.dataframe(pd.DataFrame(rec), hide_index=True, width="stretch")
 
     if not read_only:
         with st.expander("Paste from Excel"):

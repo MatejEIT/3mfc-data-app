@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 import streamlit as st
 
-from services.auth_service import User, resolve_user
+from domain.models import Role
+from services.auth_service import User, identity_from_headers, resolve_user
 from services.config import Settings, load_settings, storage_token
 from services.forecast_service import ForecastService
 from services.keboola_client import Gateway, InMemoryGateway, KeboolaGateway, read_app
@@ -44,14 +45,18 @@ def get_context() -> AppContext:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _access_table() -> "object":
+def _app_access_table() -> "object":
     return read_app(get_context().gateway, S.USER_ACCESS)
 
 
 def current_user() -> User | None:
     ctx = get_context()
+    if ctx.settings.is_dev:                       # local / pre-SSO only (APP_DEV_USER)
+        return User(ctx.settings.dev_user, Role(ctx.settings.dev_role), frozenset({"*"}))
     admins = frozenset(e.strip().lower() for e in os.environ.get("APP_BOOTSTRAP_ADMINS", "").split(",") if e.strip())
-    return resolve_user(st.context.headers, _access_table(), ctx.settings, admins)
+    email = identity_from_headers(st.context.headers)
+    st.session_state["identity_email"] = email
+    return resolve_user(email, _app_access_table(), ctx.ref.group_access(), admins)
 
 
 def require_user() -> User:

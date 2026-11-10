@@ -63,7 +63,7 @@ def test_submit_blocked_until_required_data_complete(imported, forecast_service,
     out = forecast_service.save(entity_user, ws, [], None, "", "s1", submit=True)
     assert out.revision is None
     codes = {i.code for i in out.issues if i.severity.value == "BLOCKING"}
-    assert {"B_AR_AP_MISSING", "B_IC_UNALLOCATED"} <= codes
+    assert "B_AR_AP_MISSING" in codes and "B_IC_UNALLOCATED" not in codes   # IC is entered per partner row
 
 
 def test_full_submit_then_hq_adjustment_keeps_submitted_revision_immutable(imported, forecast_service, repo,

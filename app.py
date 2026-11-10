@@ -18,8 +18,9 @@ except Exception as exc:  # configuration problems must be visible, not a blank 
 
 user = current_user()
 if user is None:
-    st.error("Access denied. Your account is not registered for the 3M Cash Flow Forecast. "
-             "Ask the HQ administrator to grant access.")
+    who = st.session_state.get("identity_email") or "unknown user"
+    st.error(f"Access denied for **{who}**. Your e-mail is not assigned to any company in the group access list "
+             "(VIT_AR_REPORT_COMMENTS_ACCESS). Please ask HQ finance to add you.")
     st.stop()
 st.session_state["user"] = user
 

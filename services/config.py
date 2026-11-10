@@ -47,6 +47,8 @@ class Settings:
     bucket_weekly: str
     bucket_bootstrap: str
     bucket_fx: str
+    access_bucket: str         # group access list (VIT_AR_REPORT_COMMENTS_ACCESS)
+    access_table: str
     backend: str               # "keboola" | "memory"
     dev_user: str              # dev only: fixed identity when no SSO identity is available
     dev_role: str
@@ -74,6 +76,8 @@ def load_settings() -> Settings:
         bucket_weekly=_env("BUCKET_WEEKLY", "out.c-3MFC-Weekly-Cash-Flow-Facts--App-Prefill-staging"),
         bucket_bootstrap=_env("BUCKET_BOOTSTRAP", "out.c-3MFC-App-Backend-Bootstrap-no-writes"),
         bucket_fx=_env("BUCKET_FX", "out.c-3MFC-VIT-Entity-Dictionary--Prior-Month-FX-staging"),
+        access_bucket=_env("ACCESS_BUCKET", "in.c-keboola-ex-onedrive-01k9yktxmdfz57yts7njhyfs8t"),
+        access_table=_env("ACCESS_TABLE", "VIT_AR_REPORT_COMMENTS_ACCESS"),
         backend=_env("APP_BACKEND", "keboola"),
         dev_user=_env("APP_DEV_USER"),
         dev_role=_env("APP_DEV_ROLE", "HQ"),

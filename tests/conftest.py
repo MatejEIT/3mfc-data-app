@@ -44,7 +44,9 @@ TEMPLATE: list[Line] = [
 ] + [Line("L_AR_NOT_OVERDUE_DETAIL_2", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Second customer", 16),
      # free customer slots exactly as in the Excel template
      Line("L_AR_PH1", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Project name and Customer name", 17),
-     Line("L_AR_PH2", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Project name and Customer name", 18)]
+     Line("L_AR_PH2", "AR_NOT_OVERDUE_DETAIL", RowType.DETAIL, "Project name and Customer name", 18),
+     # "IC (other VI-group)" inflow, template row 65 (row 89 outflow is L_INTERCOMPANY_OTHER_OUTFLOW)
+     Line("L_IC_OTHER_IN", "OTHER_RECEIPTS_DETAIL", RowType.DETAIL, "IC (other VI-group)", 65)]
 
 
 def _wk(p, i, s, e, status=CalendarStatus.SOURCE_EXCEL):
@@ -103,6 +105,7 @@ def seed_frame(bu: str = BU) -> pd.DataFrame:
 def make_settings() -> Settings:
     return Settings(kbc_url="", query_service_url="", branch_id="1", workspace_id="", app_bucket="in.c-3mfc-app",
                     staging_db="DB", bucket_weekly="weekly", bucket_bootstrap="bootstrap", bucket_fx="fx",
+                    access_bucket="acl", access_table="ACCESS",
                     backend="memory", dev_user="", dev_role="HQ", app_url="")
 
 
@@ -112,6 +115,8 @@ def make_gateway() -> InMemoryGateway:
          "COUNTRY": "DE", "CODE_REGION": "WEE", "CODE_LOCAL_CURRENCY": "EUR"},
         {"CODE_BUSINESS_UNIT": BU, "CODE_ENTITY": "V002", "NAME_ENTITY": "VITRONIC Machine Vision Ltd.",
          "COUNTRY": "USA", "CODE_REGION": "AME", "CODE_LOCAL_CURRENCY": "USD"},
+        {"CODE_BUSINESS_UNIT": "V016MX", "CODE_ENTITY": "V016", "NAME_ENTITY": "VITRONIC Mexico",
+         "COUNTRY": "Mexico", "CODE_REGION": "AME", "CODE_LOCAL_CURRENCY": "MXN"},
     ])
     cps = pd.DataFrame([{"CODE_COUNTERPARTY_ENTITY": b, "IS_ACTIVE": "1"} for b in ("V001DE", BU)])
     week_dim = pd.DataFrame([{"CODE_SNAPSHOT": "202610", "CODE_PERIOD_VALUE": w.code_period_value,

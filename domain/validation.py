@@ -215,8 +215,9 @@ def validate_forecast(
             issues.append(Issue(Severity.WARNING, "W_NEGATIVE_CASH", f"Negative closing cash balance {v:,.0f}",
                                 bu, w.code_period_value, w.code_week_period, metric_code="CLOSING_CASH_BALANCE"))
 
-    # IC split must reconcile with row 89 per interval; counterparties must be valid.
-    ic_line = next((ln for ln in lines if ln.metric_code == IC_SPLIT_METRIC), None)
+    # IC with partner companies is entered directly in the grid (one row per partner, see
+    # domain/ic_partners.py), so there is no separate split to reconcile. Legacy split rows are
+    # still checked for valid counterparties.
     for d in ic_details:
         if d.counterparty not in valid_counterparties:
             issues.append(Issue(Severity.BLOCKING, "B_IC_COUNTERPARTY", f"Unknown counterparty '{d.counterparty}'",
@@ -224,15 +225,6 @@ def validate_forecast(
         elif d.counterparty == bu:
             issues.append(Issue(Severity.BLOCKING, "B_IC_SELF", "Entity cannot be its own IC counterparty",
                                 bu, d.code_period_value, d.code_week_period, metric_code=IC_SPLIT_METRIC))
-    if ic_line:
-        for w in weeks:
-            main = result.line_weekly[(ic_line.line_id, w.code_week_period)].amount or Decimal(0)
-            split = sum((d.amount for d in ic_details if d.code_week_period == w.code_week_period), Decimal(0))
-            if abs(main - split) > IC_TOLERANCE:
-                issues.append(Issue(Severity.BLOCKING, "B_IC_UNALLOCATED",
-                                    f"IC other outflow {main:,.2f} vs counterparty split {split:,.2f} "
-                                    f"(unallocated {main - split:,.2f})",
-                                    bu, w.code_period_value, w.code_week_period, ic_line.line_id, IC_SPLIT_METRIC))
 
     # Carry-forward month must be reviewed explicitly by the entity.
     cf_periods = sorted({c.code_period_value for c in cells.values() if c.origin == ValueOrigin.CARRY_FORWARD})

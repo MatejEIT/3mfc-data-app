@@ -116,6 +116,8 @@ class Line:
     row_type: RowType
     label: str
     source_row: int
+    order: int = 0                  # position within the same template row (IC partner rows follow the base row)
+    ic_partner: str = ""            # CODE_BUSINESS_UNIT of the IC partner for partner rows
 
 
 @dataclass(frozen=True)
