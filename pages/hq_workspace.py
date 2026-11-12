@@ -53,6 +53,38 @@ with st.container(key="ctl_panel"):
             k[3].markdown(T.kpi_card("Adjusted by HQ", str(int(view["HQ adjusted"].sum())), "after submission"),
                           unsafe_allow_html=True)
 
+        # ---- FINAL: HQ declares the current numbers of the snapshot final (read-only, used by HQ report)
+        snap_status = ctx.repo.snapshot_status(snap)
+        is_final = snap_status.get("STATUS") == "FINAL"
+
+        @st.dialog("Mark snapshot as FINAL" if not is_final else "Reopen snapshot")
+        def status_dialog() -> None:
+            if is_final:
+                st.write(f"Reopen **{snap}**? Companies and HQ can change the numbers again; the HQ report "
+                         "will show the changed numbers until the snapshot is marked final again.")
+            else:
+                st.write(f"Mark **{snap}** as FINAL? The current version of every company becomes the final one: "
+                         "the snapshot is read-only for everybody and the **HQ report** uses exactly these numbers. "
+                         "It is recorded in the audit trail and can be reopened by HQ.")
+            note = st.text_input("Comment", placeholder="e.g. October forecast final for the group report")
+            if st.button("Reopen" if is_final else "Mark FINAL", type="primary", width="stretch"):
+                with st.spinner("Saving…"):
+                    (ctx.snapshots.reopen if is_final else ctx.snapshots.finalize)(user, snap, note)
+                for key_ in [k_ for k_ in st.session_state if str(k_).startswith(("report::", "ws::"))] +                         ["final_snapshots"]:
+                    st.session_state.pop(key_, None)
+                st.rerun()
+
+        s1, s2 = st.columns([5, 1.2])
+        if is_final:
+            s1.markdown(T.chip("FINAL", "ok") + f' <span class="blk-sub">marked by '
+                        f'{snap_status.get("CREATED_BY", "")} · {str(snap_status.get("CREATED_AT_UTC", ""))[:16]} UTC · '
+                        'read-only, used by HQ report</span>', unsafe_allow_html=True)
+        else:
+            s1.markdown(T.chip("OPEN", "warn") + ' <span class="blk-sub">numbers can still change</span>',
+                        unsafe_allow_html=True)
+        if s2.button("Reopen" if is_final else "Mark FINAL", width="stretch", type="secondary" if is_final else "primary"):
+            status_dialog()
+
 # =========================================================================== 2. work area
 if view is not None:
     with st.container(key="work_area"):

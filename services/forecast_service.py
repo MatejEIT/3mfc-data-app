@@ -28,7 +28,7 @@ from domain.models import (
     WeekPeriod,
 )
 from domain.validation import Edit, has_blocking, validate_edits, validate_forecast, validate_label_edits
-from services.auth_service import User
+from services.auth_service import AccessDenied, User
 from services.reference_data import ReferenceData
 from services.repository import AuditEvent, CommitRequest, ForecastRepository, ForecastState, RevisionInfo, new_id, utc_now
 
@@ -52,6 +52,7 @@ class Workspace:
     valid_counterparties: set[str]
     issues: list[Issue] = field(default_factory=list)
     company_names: dict[str, str] = field(default_factory=dict)
+    final: bool = False             # HQ marked the snapshot FINAL -> read-only for everybody
 
     @property
     def first_week(self) -> str:
@@ -101,7 +102,7 @@ class ForecastService:
         state = self.repo.load_state(snapshot, bu, revision)
         lines = with_added_partners(bu, self.ref.lines(bu), state.labels, names)
         result = calculate(lines, calendar, state.cells)
-        sub = self.repo.submissions(snapshot)
+        sub, snap_row = self.repo.submissions_and_status(snapshot)
         sub = sub[sub["CODE_BUSINESS_UNIT"] == bu]
         status = SubmissionStatus(sub.iloc[0]["STATUS"]) if not sub.empty else SubmissionStatus.DRAFT
         cps = set(self.ref.counterparties()["CODE_COUNTERPARTY_ENTITY"])
@@ -111,6 +112,7 @@ class ForecastService:
             lines, calendar, state, result, fx, self.ref.fx_reference(bu, snapshot), status,
             sub.iloc[0]["SUBMISSION_ID"] if not sub.empty else "",
             sub.iloc[0]["SUBMITTED_REVISION_ID"] if not sub.empty else "", cps, company_names=names)
+        ws.final = snap_row.get("STATUS") == "FINAL"
         ws.issues = self._validate(ws, state.cells, state.ic_details,
                                    set(state.head.carry_forward_reviewed) if state.head else set())
         return ws
@@ -168,6 +170,8 @@ class ForecastService:
         `acknowledged` = warnings the user saw in the pop-up and submitted anyway (recorded in the audit)."""
         submitted = ws.status == SubmissionStatus.SUBMITTED
         user.require_edit(ws.business_unit, submitted)
+        if ws.final:                 # re-checked inside the commit transaction (SnapshotFinal)
+            raise AccessDenied(f"Snapshot {ws.snapshot} is FINAL – HQ must reopen it before any change.")
         if submit and submitted:
             return SaveOutcome(None, [], "Forecast is already submitted.")
 

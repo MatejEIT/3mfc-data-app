@@ -59,6 +59,10 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
+class SnapshotFinal(PermissionError):
+    """The snapshot was marked FINAL by HQ - no more changes until it is reopened."""
+
+
 class RevisionConflict(RuntimeError):
     """The forecast changed since it was loaded - reload and re-apply."""
 
@@ -202,6 +206,77 @@ class ForecastRepository:
     def submissions(self, snapshot: str) -> pd.DataFrame:
         return read_app(self.gw, S.SUBMISSION, {"CODE_SNAPSHOT": snapshot})
 
+    def submissions_and_status(self, snapshot: str) -> tuple[pd.DataFrame, dict]:
+        """Submission rows and the snapshot status row in ONE job."""
+        sub, snap = self.gw.read_many([Read(table=S.SUBMISSION, where={"CODE_SNAPSHOT": snapshot}),
+                                       Read(table=S.SNAPSHOT, where={"CODE_SNAPSHOT": snapshot})])
+        return sub, (snap.iloc[0].to_dict() if not snap.empty else {})
+
+    # ------------------------------------------------------------------ snapshot status (FINAL / OPEN)
+    def snapshot_status(self, snapshot: str) -> dict:
+        """Row of FT_3MFC_APP_SNAPSHOT ({} when the snapshot was never finalised -> OPEN)."""
+        df = read_app(self.gw, S.SNAPSHOT, {"CODE_SNAPSHOT": snapshot})
+        return df.iloc[0].to_dict() if not df.empty else {}
+
+    def final_snapshots(self) -> list[str]:
+        df = read_app(self.gw, S.SNAPSHOT, {"STATUS": "FINAL"})
+        return sorted(set(df["CODE_SNAPSHOT"]), reverse=True)
+
+    def head_revisions(self, snapshot: str) -> dict[str, RevisionInfo]:
+        """Latest committed revision of every company of a snapshot (one Query Service job)."""
+        df = read_app(self.gw, S.REVISION, {"CODE_SNAPSHOT": snapshot, "STATUS": "COMMITTED"})
+        heads: dict[str, RevisionInfo] = {}
+        for _, r in df.iterrows():
+            rev = _rev_from_row(r)
+            bu = str(r["CODE_BUSINESS_UNIT"])
+            if bu not in heads or rev.revision_no > heads[bu].revision_no:
+                heads[bu] = rev
+        return heads
+
+    def load_states(self, snapshot: str) -> dict[str, ForecastState]:
+        """Head state of ALL companies of a snapshot in two jobs (report / consolidation)."""
+        heads = self.head_revisions(snapshot)
+        if not heads:
+            return {}
+        by_write = {"WRITE_ID": [h.write_id for h in heads.values()]}
+        inputs, labels = self.gw.read_many([Read(table=S.INPUT, where=by_write),
+                                            Read(table=S.LINE_LABEL, where=by_write)])
+        bu_of_write = {h.write_id: bu for bu, h in heads.items()}
+        states = {bu: ForecastState(snapshot, bu, h) for bu, h in heads.items()}
+        for _, r in inputs.iterrows():
+            st_ = states[bu_of_write[r["WRITE_ID"]]]
+            cell = InputCell(
+                r["LINE_ID"], r["METRIC_CODE"], r["CODE_PERIOD_VALUE"], r["CODE_WEEK_PERIOD"],
+                parse_stored(r["AMOUNT_LCY"]), ValueState(r["VALUE_STATE"]), ValueOrigin(r["VALUE_ORIGIN"]),
+                Provenance(r["SOURCE_SNAPSHOT"], r["SOURCE_PERIOD"], r["SOURCE_WEEK"], r["SOURCE_LINE_ID"],
+                           r["SOURCE_REVISION_ID"], r["MODIFIED_BY"], r["MODIFIED_AT_UTC"]))
+            st_.cells[cell.key] = cell
+        for _, r in labels.iterrows():
+            states[bu_of_write[r["WRITE_ID"]]].labels[r["LINE_ID"]] = r["LINE_LABEL"]
+        return states
+
+    def set_snapshot_status(self, snapshot: str, status: str, periods: list[str], fx_reference: str,
+                            actor: str, role: str, comment: str) -> dict[str, RevisionInfo]:
+        """Mark a snapshot FINAL (or OPEN again). One transaction: the snapshot row plus one audit
+        event per company naming the revision that is final at this moment."""
+        heads = self.head_revisions(snapshot)
+        now = self.clock()
+        row = {"CODE_SNAPSHOT": snapshot, "SOURCE_SNAPSHOT": "", "PERIOD_1": periods[0], "PERIOD_2": periods[1],
+               "PERIOD_3": periods[2], "FX_REFERENCE_MONTH": fx_reference, "STATUS": status,
+               "CREATED_BY": actor, "CREATED_AT_UTC": now}
+        text = (f"Snapshot {snapshot} marked FINAL" if status == "FINAL" else f"Snapshot {snapshot} reopened") +             (f" – {comment}" if comment else "")
+        audit = pd.DataFrame([{
+            "EVENT_ID": self.ids(), "WRITE_ID": h.write_id, "SUBMISSION_ID": h.submission_id,
+            "REVISION_ID": h.revision_id, "CODE_SNAPSHOT": snapshot, "CODE_BUSINESS_UNIT": bu,
+            "CODE_PERIOD_VALUE": "", "CODE_WEEK_PERIOD": "", "LINE_ID": "", "METRIC_CODE": "",
+            "OLD_VALUE_LCY": "", "NEW_VALUE_LCY": "", "OLD_VALUE_STATE": "", "NEW_VALUE_STATE": status,
+            "CODE_CURRENCY": "", "CHANGE_TYPE": ChangeType.SNAPSHOT_STATUS.value, "CHANGED_BY": actor,
+            "CHANGED_ROLE": role, "CHANGED_AT_UTC": now,
+            "COMMENT": f"{text} (revision {h.revision_no} is the final one)" if status == "FINAL" else text,
+        } for bu, h in sorted(heads.items())])
+        self.gw.write_many([(S.AUDIT, audit), (S.SNAPSHOT, pd.DataFrame([row]))])
+        return heads
+
     # ----------------------------------------------------------------- writes
     def commit(self, req: CommitRequest) -> RevisionInfo:
         with _lock_for(req.snapshot, req.business_unit):
@@ -210,7 +285,10 @@ class ForecastRepository:
     def _commit_locked(self, req: CommitRequest) -> RevisionInfo:
         """One read job (revisions + submission status) and ONE transactional write job."""
         key = {"CODE_SNAPSHOT": req.snapshot, "CODE_BUSINESS_UNIT": req.business_unit}
-        all_revs, sub = self.gw.read_many([Read(table=S.REVISION, where=key), Read(table=S.SUBMISSION, where=key)])
+        all_revs, sub, snap = self.gw.read_many([Read(table=S.REVISION, where=key), Read(table=S.SUBMISSION, where=key),
+                                                 Read(table=S.SNAPSHOT, where={"CODE_SNAPSHOT": req.snapshot})])
+        if not snap.empty and (snap["STATUS"] == "FINAL").any():
+            raise SnapshotFinal(f"Snapshot {req.snapshot} is FINAL – HQ must reopen it before any change.")
         committed = all_revs[all_revs["STATUS"] == "COMMITTED"]
         if req.idempotency_key:
             dup = committed[committed["IDEMPOTENCY_KEY"] == req.idempotency_key]

@@ -30,6 +30,8 @@ pages = [
 if user.is_hq:
     pages.append(st.Page("pages/hq_workspace.py", title="HQ Workspace", icon=":material/apartment:"))
 pages.append(st.Page("pages/methodology.py", title="Methodology", icon=":material/menu_book:"))
+if user.is_hq:
+    pages.append(st.Page("pages/hq_report.py", title="HQ report", icon=":material/monitoring:"))
 
 nav = st.navigation(pages, position="top")
 header(user.email, user.role.value, nav.title)

@@ -20,7 +20,7 @@ from domain.models import IcDetail, Severity, SubmissionStatus, ValueOrigin
 from domain.validation import visible_issues
 from services.auth_service import AccessDenied
 from services.bootstrap import get_context, require_user
-from services.repository import RevisionConflict
+from services.repository import RevisionConflict, SnapshotFinal
 
 ctx = get_context()
 user = require_user()
@@ -88,13 +88,14 @@ pending: dict = st.session_state.setdefault(pend_key, {})
 label_pending: dict = st.session_state.setdefault(lbl_key, {})
 ic_rows: list[IcDetail] = st.session_state.setdefault(ic_key, list(ws.state.ic_details))
 submitted = ws.status == SubmissionStatus.SUBMITTED
-read_only = not user.can_edit(bu, submitted)
+read_only = not user.can_edit(bu, submitted) or ws.final
 unit = f"k{ws.currency}"
 issues = visible_issues(st.session_state.get(f"issues::{ns}") or ws.issues, user.is_hq)
 n_block = sum(i.severity == Severity.BLOCKING for i in issues)
 n_warn = sum(i.severity == Severity.WARNING for i in issues)
 
-chips = [T.chip("SUBMITTED", "ok") if submitted else T.chip("DRAFT – not submitted yet", "warn"),
+chips = [T.chip("FINAL – read-only", "ok") if ws.final else
+         T.chip("SUBMITTED", "ok") if submitted else T.chip("DRAFT – not submitted yet", "warn"),
          T.chip(f"Values in {unit}"),
          T.chip(f"FX {ws.fx_reference}", "bad" if any(v is None for v in ws.fx_rates.values()) else ""),
          T.chip(f"Revision {ws.state.revision_no}", "info")]
@@ -176,7 +177,7 @@ with work:
         except RevisionConflict as exc:
             st.session_state["flash"] = ("error", f"{exc} Your unsaved changes are kept – click **Reload**.")
             return
-        except AccessDenied as exc:
+        except (AccessDenied, SnapshotFinal) as exc:
             st.session_state["flash"] = ("error", str(exc))
             return
         st.session_state[f"issues::{ns}"] = out.issues

@@ -8,7 +8,7 @@ from decimal import Decimal
 import pandas as pd
 
 from domain.calc import calculate, ordered_weeks
-from domain.calendar import next_period
+from domain.calendar import next_period, snapshot_periods
 from domain.metrics import METRICS, InputMode
 from domain.models import (
     ChangeType,
@@ -147,6 +147,23 @@ class SnapshotService:
             res.issues.append(Issue(Severity.WARNING, "W_CALENDAR_PROPOSED",
                                     "New month calendar is a proposal - confirm it in Admin › Calendar"))
         return res
+
+    # ---------------------------------------------------------------- FINAL / reopen
+    def finalize(self, user: User, snapshot: str, comment: str = "") -> list[str]:
+        """HQ declares the current numbers of a snapshot final: the snapshot becomes read-only and
+        the HQ report uses exactly these revisions. Not an approval workflow - one HQ action, audited."""
+        user.require_hq()
+        heads = self.repo.set_snapshot_status(snapshot, "FINAL", snapshot_periods(snapshot),
+                                              self._fx_ref(snapshot), user.email, user.role.value, comment)
+        return sorted(heads)
+
+    def reopen(self, user: User, snapshot: str, comment: str = "") -> None:
+        user.require_hq()
+        self.repo.set_snapshot_status(snapshot, "OPEN", snapshot_periods(snapshot), self._fx_ref(snapshot),
+                                      user.email, user.role.value, comment)
+
+    def _fx_ref(self, snapshot: str) -> str:
+        return next_period(snapshot, -1)        # FX = IDL SK (BS) of the month before the snapshot
 
     def new_detail_id(self) -> str:
         return new_id()

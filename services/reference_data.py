@@ -132,6 +132,40 @@ class ReferenceData:
             Read(table=S.LINE, where={"CODE_BUSINESS_UNIT": bu}),
             Read(bucket=self.s.bucket_weekly, name=SEED_TABLE, where={"CODE_BUSINESS_UNIT": bu},
                  columns=("LINE_ID", "METRIC_CODE", "ROW_TYPE", "LINE_DESCRIPTION", "SOURCE_ROW"))])
+        return self._build_lines(bu, app, seed)
+
+    def prefetch(self, bus: list[str], snapshot: str) -> None:
+        """Load template lines and FX of many companies in ONE job and fill the per-company cache
+        (the HQ report needs all companies; one job per company would take minutes)."""
+        need_lines = [b for b in bus if not self._is_cached(("lines", b))]
+        need_fx = [b for b in bus if not self._is_cached(("fx", b, snapshot))]
+        if not need_lines and not need_fx:
+            return
+        app, seed, fx = self.gw.read_many([
+            Read(table=S.LINE, where={"CODE_BUSINESS_UNIT": need_lines or [""]}),
+            Read(bucket=self.s.bucket_weekly, name=SEED_TABLE, where={"CODE_BUSINESS_UNIT": need_lines or [""]},
+                 columns=("CODE_BUSINESS_UNIT", "LINE_ID", "METRIC_CODE", "ROW_TYPE", "LINE_DESCRIPTION",
+                          "SOURCE_ROW")),
+            Read(bucket=self.s.bucket_fx, name="FT_3MFC_FX_3MONTH",
+                 where={"CODE_BUSINESS_UNIT": need_fx or [""], "CODE_FORECAST_START_MONTH": snapshot})])
+        for b in need_lines:
+            a = app[app["CODE_BUSINESS_UNIT"] == b] if "CODE_BUSINESS_UNIT" in app else app
+            s_ = seed[seed["CODE_BUSINESS_UNIT"] == b] if "CODE_BUSINESS_UNIT" in seed else seed
+            self._put(("lines", b), self._build_lines(b, a, s_))
+        for b in need_fx:
+            f = fx[fx["CODE_BUSINESS_UNIT"] == b] if "CODE_BUSINESS_UNIT" in fx else fx
+            self._put(("fx", b, snapshot), f.reset_index(drop=True))
+
+    def _is_cached(self, key: tuple) -> bool:
+        with self._lock:
+            hit = self._cache.get(key)
+            return bool(hit and hit[0] > self._clock())
+
+    def _put(self, key: tuple, value) -> None:
+        with self._lock:
+            self._cache[key] = (self._clock() + self.TTL_SECONDS, value)
+
+    def _build_lines(self, bu: str, app: pd.DataFrame, seed: pd.DataFrame) -> list[Line]:
         if not app.empty:
             app = app[app["IS_ACTIVE"] == "1"]
             lines = [Line(r["LINE_ID"], r["METRIC_CODE"], RowType(r["ROW_TYPE"]), r["LINE_LABEL"],

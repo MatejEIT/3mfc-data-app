@@ -47,6 +47,7 @@ class ChangeType(str, Enum):
     ROLLOVER = "ROLLOVER"
     CARRY_FORWARD = "CARRY_FORWARD"
     SYSTEM_CORRECTION = "SYSTEM_CORRECTION"
+    SNAPSHOT_STATUS = "SNAPSHOT_STATUS"      # HQ marked a snapshot FINAL / reopened it
 
 
 class RevisionKind(str, Enum):
