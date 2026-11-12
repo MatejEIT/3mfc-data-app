@@ -3,7 +3,7 @@
 Layout (kept deliberately simple):
   1. control panel  – entity, snapshot, month, forecast status
   2. work area      – key figures, the grid (one month at a time), save / submit
-  3. details        – validations, paste from Excel, history (collapsed)
+  3. details        – validations, history (collapsed)
 """
 from __future__ import annotations
 
@@ -237,29 +237,6 @@ with details:
                          hide_index=True, width="stretch")
 
     week_codes = [w.code_week_period for w in ws.calendar]
-
-    if not read_only:
-        with st.expander("Paste from Excel"):
-            st.caption(f"Copy a block of numbers in {unit} from Excel (rows × weeks), choose where it starts and "
-                       "apply. The values appear in the grid as unsaved changes.")
-            input_lines = [ln for ln in ws.lines if ln.row_type.value == "DETAIL"]
-            t1, t2 = st.columns(2)
-            start_line = t1.selectbox("First row", [ln.line_id for ln in input_lines],
-                                      format_func=lambda i: ws.label(ws.lines_by_id[i]), key=f"bp_line::{ns}")
-            start_week = t2.selectbox("First week", week_codes, key=f"bp_week::{ns}")
-            block = st.text_area("Values (tab separated, one row per line)", key=f"bp_text::{ns}", height=110)
-            if st.button("Apply pasted values", disabled=not block.strip()):
-                li = [ln.line_id for ln in input_lines].index(start_line)
-                wi = week_codes.index(start_week)
-                added = 0
-                for r_off, text_row in enumerate(block.strip("\n").splitlines()):
-                    for c_off, raw in enumerate(text_row.split("\t")):
-                        if li + r_off < len(input_lines) and wi + c_off < len(week_codes):
-                            pending[(input_lines[li + r_off].line_id, week_codes[wi + c_off])] = (raw.strip(), SCALE)
-                            added += 1
-                st.session_state[pend_key] = pending
-                st.session_state["flash"] = ("info", f"{added} values staged – review the grid and save.")
-                st.rerun()
 
     with st.expander("Change history"):
         st.caption("Every saved change: who, when, old and new value (in full local currency).")

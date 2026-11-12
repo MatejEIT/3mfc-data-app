@@ -29,7 +29,7 @@ from domain.ic_partners import (
     partner_marker,
     with_added_partners,
 )
-from domain.metrics import METRICS, Aggregation, InputMode, Section, is_nameable, is_placeholder_label
+from domain.metrics import AR_AP_ENABLED, METRICS, Aggregation, InputMode, Section, is_nameable, is_placeholder_label
 from domain.models import InputCell, Provenance, RowType, ValueOrigin, ValueState, month_slot
 from domain.validation import AmountParseError, Edit, parse_amount
 from services.forecast_service import Workspace
@@ -149,6 +149,8 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
     free_slot_shown: set[str] = set()
     for ln in lines:
         m = METRICS[ln.metric_code]
+        if m.section == Section.BALANCES and not AR_AP_ENABLED:
+            continue                              # AR/AP postponed to the next phase
         nameable = is_nameable(ln.metric_code, ln.label)
         label = label_pending.get(ln.line_id, ws.label(ln))
         if parse_partner_marker(label):

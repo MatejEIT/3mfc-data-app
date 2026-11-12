@@ -124,6 +124,10 @@ AR_AP_METRICS: tuple[str, ...] = (
 )
 IC_SPLIT_METRIC = "INTERCOMPANY_OTHER_OUTFLOW"
 
+# AR/AP month-end balances are postponed to the next phase (2026-11-12): hidden in the editor and
+# not required for SUBMIT. The lines and any stored values are kept; set True to switch them back on.
+AR_AP_ENABLED = False
+
 
 def children_of(code: str) -> list[str]:
     return [m.code for m in _METRICS if m.parent == code]

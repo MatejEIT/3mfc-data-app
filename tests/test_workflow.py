@@ -60,10 +60,13 @@ def test_entity_save_draft_creates_revision_and_audit(imported, forecast_service
 
 def test_submit_blocked_until_required_data_complete(imported, forecast_service, entity_user):
     ws = forecast_service.open(entity_user, "202610", BU)
-    out = forecast_service.save(entity_user, ws, [], None, "", "s1", submit=True)
+    out = forecast_service.save(entity_user, ws, [Edit("L_OPENING_CASH_BALANCE", "202610_W1", "")], None, "",
+                                "s1", submit=True)
     assert out.revision is None
     codes = {i.code for i in out.issues if i.severity.value == "BLOCKING"}
-    assert "B_AR_AP_MISSING" in codes and "B_IC_UNALLOCATED" not in codes   # IC is entered per partner row
+    assert "B_OPENING_MISSING" in codes
+    # AR/AP balances are postponed (AR_AP_ENABLED = False) and IC is entered per partner row
+    assert "B_AR_AP_MISSING" not in codes and "B_IC_UNALLOCATED" not in codes
 
 
 def test_full_submit_then_hq_adjustment_keeps_submitted_revision_immutable(imported, forecast_service, repo,

@@ -18,7 +18,6 @@ Weekly values are the **only** editable flow granularity; monthly values are alw
 | Cash inflow / outflow / net movement | sum of W1–W4 |
 | Opening cash balance | opening of W1 |
 | Closing cash balance | closing of W4 |
-| AR / AP closing balances | month-end balance (entered once per month) |
 
 A calendar for a new month is generated as a **proposal** (`PROPOSED_CONFIRM_REQUIRED`) and must be confirmed by HQ.
 
@@ -33,7 +32,7 @@ A calendar for a new month is generated as a **proposal** (`PROPOSED_CONFIRM_REQ
 |---|---|---|
 | ENTERED | explicit number, including 0 | value |
 | BLANK | optional detail line left empty | 0, displayed empty |
-| MISSING | required input empty (opening cash, AR/AP) | unknown – blocks SUBMIT |
+| MISSING | required input empty (opening cash) | unknown – blocks SUBMIT |
 | CALCULATED | derived by the engine | – |
 
 ### Rolling 2+1

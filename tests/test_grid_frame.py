@@ -124,3 +124,10 @@ def test_trash_icon_only_on_deletable_rows_and_staged_delete(snapshot_service, f
     pending, labels = {(preset, "202610_W1"): ("5", 1000)}, {}
     _stage_delete(ws, ws.lines_by_id, cells, preset, pending, labels)
     assert pending == {} and labels == {}                          # preset partner: only its values go
+
+
+def test_ar_ap_section_hidden_while_postponed(snapshot_service, forecast_service, hq):
+    from domain.metrics import AR_AP_ENABLED
+    assert AR_AP_ENABLED is False
+    f, _ = _frame(_ws(snapshot_service, forecast_service, hq))
+    assert "__section__BALANCES" not in f.index and not any("CLOSING_BALANCE" in str(i) and "CASH" not in str(i) for i in f.index)

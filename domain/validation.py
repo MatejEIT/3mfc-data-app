@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from domain.calc import ForecastResult, is_cell_editable, ordered_weeks
-from domain.metrics import AR_AP_METRICS, IC_SPLIT_METRIC, METRICS
+from domain.metrics import AR_AP_ENABLED, AR_AP_METRICS, IC_SPLIT_METRIC, METRICS
 from domain.models import (
     IcDetail,
     InputCell,
@@ -215,7 +215,7 @@ def validate_forecast(
                             opening.line_id if opening else "", "OPENING_CASH_BALANCE"))
 
     # AR/AP month-end balances are required for every forecast month.
-    for metric in AR_AP_METRICS:
+    for metric in (AR_AP_METRICS if AR_AP_ENABLED else ()):
         mlines = [ln for ln in lines if ln.metric_code == metric]
         for p in result.periods:
             c = cells.get((mlines[0].line_id, month_slot(p))) if mlines else None
