@@ -54,4 +54,18 @@ reconciliation only.
 No approval workflow: entities save drafts and **SUBMIT**. The submitted revision is stored immutably.
 HQ can adjust afterwards; each saved adjustment creates a new revision and audit records and marks the
 entity for a summary notification.
+
+### Validations (Validate & submit)
+**Must be fixed before submit:** values must be numbers (max 2 decimals), opening cash of the first week is
+entered, every forecast month has at least one cash-flow value (0 counts), pre-filled months are reviewed.
+
+**Plausibility checks – shown in the pop-up, do not block:** the entity can go back to *Edit* or submit
+anyway with a comment; the comment and the accepted findings are stored in the audit trail.
+
+| Check | Rule |
+|---|---|
+| Negative inflow / outflow | inflows and outflows are entered as positive numbers (bank financing may be ±) |
+| Previous snapshot | month-end closing cash differs more than ±30 % from the previous snapshot's forecast |
+| Actuals | average forecast closing cash differs more than ±30 % from the average month-end cash of the last 6 closed months (IDL actuals, account 12200, LCY) |
+| Company questions | fixed reminders, e.g. V004: factoring repayment |
 """)

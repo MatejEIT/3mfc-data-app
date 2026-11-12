@@ -24,6 +24,7 @@ def imported(snapshot_service, hq):
 
 def _complete_edits() -> list[Edit]:
     edits = [Edit(lid, month_slot(p), "1000") for lid in ar_ap_ids() for p in ("202610", "202611", "202612")]
+    edits += [Edit("L_TAXES", f"{p}_W2", "0") for p in ("202610", "202611", "202612")]   # every month has values
     return edits
 
 

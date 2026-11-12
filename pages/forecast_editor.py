@@ -165,12 +165,13 @@ with work:
                              value=p in reviewed, key=f"cf::{ns}::{p}")
             reviewed = reviewed | {p} if ok else reviewed - {p}
 
-    def _save(submit: bool, comment: str) -> None:
+    def _save(submit: bool, comment: str, acknowledged: list | None = None) -> None:
         key = st.session_state.setdefault(idem_key, uuid.uuid4().hex)
         try:
             with st.spinner("Validating and saving…"):
                 out = ctx.forecasts.save(user, ws, G.pending_to_edits(pending), ic_rows, comment, key,
-                                         reviewed, submit=submit, label_edits=label_pending)
+                                         reviewed, submit=submit, label_edits=label_pending,
+                                         acknowledged=acknowledged)
         except RevisionConflict as exc:
             st.session_state["flash"] = ("error", f"{exc} Your unsaved changes are kept – click **Reload**.")
             return
@@ -187,13 +188,49 @@ with work:
         load_workspace(force=True)
         st.session_state["flash"] = ("success", out.message)
 
-    @st.dialog("Submit forecast")
-    def confirm_submit() -> None:
-        st.write(f"Submit **{labels[bu]}** for snapshot **{snapshot}**? After submission the forecast is "
-                 "read-only for you; HQ can still adjust it (every change is recorded).")
-        comment = st.text_area("Comment (optional)", key="submit_comment")
-        if st.button("Submit forecast", type="primary"):
-            _save(True, comment)
+    val_key = f"val_res::{ns}"
+
+    def _run_validation() -> None:
+        """Validate the current state incl. unsaved changes (nothing is saved)."""
+        with st.spinner("Running validations…"):
+            out = ctx.forecasts.save(user, ws, G.pending_to_edits(pending), ic_rows, "", "dry-run", reviewed,
+                                     submit=True, label_edits=label_pending, dry_run=True)
+        st.session_state[val_key] = out.issues
+        st.session_state[f"issues::{ns}"] = out.issues
+
+    @st.dialog("Validations", width="large")
+    def validation_dialog() -> None:
+        found = st.session_state.get(val_key, [])
+        blocking = [i for i in found if i.severity == Severity.BLOCKING]
+        questions = [i for i in found if i.code.startswith("Q_")]
+        warnings = [i for i in found if i.severity == Severity.WARNING]
+        notes = [i for i in found if i.severity == Severity.INFO and not i.code.startswith("Q_")]
+        if blocking:
+            st.error("**The forecast cannot be submitted yet** – please fix:\n\n"
+                     + "\n".join(f"- {i.message}" for i in blocking))
+            if st.button("Edit", type="primary", width="stretch"):
+                st.rerun()
+            return
+        if questions:
+            st.info("**Please consider**\n\n" + "\n".join(f"- {i.message}" for i in questions))
+        if warnings:
+            st.warning(f"**{len(warnings)} finding(s) – please check** (they do not block the submit)\n\n"
+                       + "\n".join(f"- {i.message}" for i in warnings))
+        if notes:
+            st.caption(" · ".join(i.message for i in notes))
+        if not (questions or warnings):
+            st.success("All checks passed.")
+        st.caption(f"Submit **{labels[bu]}** for snapshot **{snapshot}**. After submission the forecast is "
+                   "read-only for you; HQ can still adjust it (every change is recorded).")
+        comment = st.text_area("Comment", key=f"submit_comment::{ns}",
+                               placeholder="e.g. Inflow is low in December because the customer payment moved "
+                                           "to January." if warnings else "Optional comment")
+        b1, b2 = st.columns(2)
+        if b1.button("Edit", width="stretch", help="Back to the forecast – nothing is submitted"):
+            st.rerun()
+        if b2.button("Submit forecast", type="primary", width="stretch"):
+            _save(True, comment, acknowledged=found)
+            st.session_state.pop(val_key, None)
             st.rerun()
 
     if not read_only:
@@ -203,9 +240,10 @@ with work:
         if a2.button("Save" if user.is_hq else "Save draft", disabled=bool(parse_errors), width="stretch"):
             _save(False, comment)
             st.rerun()
-        if not submitted and a3.button("Submit forecast", type="primary", disabled=bool(parse_errors),
-                                       width="stretch"):
-            confirm_submit()
+        if not submitted and a3.button("Validate & submit", type="primary", disabled=bool(parse_errors),
+                                       width="stretch", help="Runs all checks; you can still edit or submit"):
+            _run_validation()
+            validation_dialog()
         if a4.button("Discard", disabled=not (pending or label_pending), width="stretch",
                      help="Throw away all unsaved changes"):
             for k_ in (pend_key, lbl_key, ic_key):
@@ -226,7 +264,8 @@ details = st.container(key="details")
 with details:
     val_title = "Validations · " + (f"{n_block} blocking, {n_warn} warnings" if issues else "all OK")
     with st.expander(val_title, expanded=bool(st.session_state.pop(f"open_val::{ns}", False))):
-        st.caption("Blocking issues prevent Submit (a draft can always be saved). Warnings are for information.")
+        st.caption("Blocking issues prevent Submit (a draft can always be saved). Warnings are for information; "
+                   "comparisons with the previous snapshot and with actuals run in **Validate & submit**.")
         if not issues:
             st.success("No validation issues.")
         else:

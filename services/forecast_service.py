@@ -8,7 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
+from domain import business_checks as BC
 from domain.calc import ForecastResult, calculate, ordered_weeks
+from domain.calendar import next_period
 from domain.ic_partners import parse_partner_marker, with_added_partners
 from domain.metrics import IC_SPLIT_METRIC, METRICS, InputMode, is_nameable, is_placeholder_label
 from domain.models import (
@@ -67,6 +69,16 @@ class Workspace:
         return override
 
 
+def _submit_note(comment: str, acknowledged: list[Issue]) -> str:
+    """Audit text of a submit: the user's comment plus the validation findings they accepted."""
+    note = comment.strip() or "Forecast submitted"
+    shown = [i for i in acknowledged if i.severity != Severity.BLOCKING]
+    if shown:
+        note += " | Submitted with validation findings: " + "; ".join(
+            f"[{i.code}] {i.message}" for i in shown)
+    return note[:4000]
+
+
 @dataclass
 class SaveOutcome:
     revision: RevisionInfo | None
@@ -104,13 +116,29 @@ class ForecastService:
         return ws
 
     def _validate(self, ws: Workspace, cells, ic, cf_reviewed: set[str],
-                  labels: dict[str, str] | None = None, lines: list[Line] | None = None) -> list[Issue]:
+                  labels: dict[str, str] | None = None, lines: list[Line] | None = None,
+                  extended: bool = False) -> list[Issue]:
+        """Cheap checks always; `extended` adds the comparisons that need extra reads (previous snapshot,
+        IDL actuals) - run only by 'Validate & submit'."""
         lines = lines or ws.lines
+        bu = ws.business_unit
         result = calculate(lines, ws.calendar, cells)
-        issues = validate_forecast(ws.business_unit, lines, ws.calendar, cells, result, ic,
+        issues = validate_forecast(bu, lines, ws.calendar, cells, result, ic,
                                    ws.valid_counterparties, {p: v is not None for p, v in ws.fx_rates.items()},
                                    cf_reviewed)
         labels = ws.state.labels if labels is None else labels
+
+        def label_of(ln: Line) -> str:
+            override = labels.get(ln.line_id)
+            return ln.label if not override or parse_partner_marker(override) else override
+
+        issues += BC.check_months_filled(bu, lines, cells, result.periods)
+        issues += BC.check_signs(bu, lines, cells, label_of)
+        issues += BC.entity_questions(bu)
+        if extended:
+            prev_snapshot = next_period(ws.snapshot, -1)
+            issues += BC.check_vs_previous(bu, result, self._previous_result(prev_snapshot, bu), prev_snapshot)
+            issues += BC.check_vs_actuals(bu, result, self.ref.cash_actuals(bu, ws.snapshot))
         for ln in lines:
             if not is_nameable(ln.metric_code, ln.label):
                 continue
@@ -121,10 +149,23 @@ class ForecastService:
                                     "project name", ws.business_unit, line_id=ln.line_id, metric_code=ln.metric_code))
         return issues
 
+    def _previous_result(self, snapshot: str, bu: str) -> ForecastResult | None:
+        """Latest committed forecast of the previous snapshot (incl. HQ adjustments), or None."""
+        if snapshot not in self.repo.snapshots():
+            return None
+        state = self.repo.load_state(snapshot, bu)
+        if state.head is None:
+            return None
+        lines = with_added_partners(bu, self.ref.lines(bu), state.labels, self.ref.company_names())
+        return calculate(lines, self.ref.calendar(snapshot), state.cells)
+
     # ------------------------------------------------------------------ save
     def save(self, user: User, ws: Workspace, edits: list[Edit], ic_details: list[IcDetail] | None,
              comment: str, idempotency_key: str, carry_forward_reviewed: set[str] | None = None,
-             submit: bool = False, label_edits: dict[str, str] | None = None) -> SaveOutcome:
+             submit: bool = False, label_edits: dict[str, str] | None = None,
+             dry_run: bool = False, acknowledged: list[Issue] | None = None) -> SaveOutcome:
+        """`dry_run` validates the would-be state (incl. extended plausibility checks) without saving.
+        `acknowledged` = warnings the user saw in the pop-up and submitted anyway (recorded in the audit)."""
         submitted = ws.status == SubmissionStatus.SUBMITTED
         user.require_edit(ws.business_unit, submitted)
         if submit and submitted:
@@ -201,7 +242,9 @@ class ForecastService:
                           else (ws.state.head.carry_forward_reviewed if ws.state.head else set()))
         prev_cf = set(ws.state.head.carry_forward_reviewed) if ws.state.head else set()
 
-        forecast_issues = self._validate(ws, cells, ic, cf_reviewed, labels, lines)
+        forecast_issues = self._validate(ws, cells, ic, cf_reviewed, labels, lines, extended=dry_run)
+        if dry_run:
+            return SaveOutcome(None, issues + forecast_issues, "Validation finished - nothing saved.")
         if submit and has_blocking(forecast_issues):
             return SaveOutcome(None, forecast_issues, "Submit refused - resolve BLOCKING issues first.")
 
@@ -212,7 +255,7 @@ class ForecastService:
         if submit:
             submission_id = new_id()
             audit.append(AuditEvent("", "", "", "", None, None, "", "", ChangeType.ENTITY_SUBMIT,
-                                    comment or "Forecast submitted"))
+                                    _submit_note(comment, acknowledged or [])))
             kind = RevisionKind.SUBMIT
         elif user.is_hq:
             kind = RevisionKind.HQ_ADJUSTMENT

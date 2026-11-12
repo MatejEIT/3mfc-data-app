@@ -53,6 +53,10 @@ class Settings:
     dev_user: str              # dev only: fixed identity when no SSO identity is available
     dev_role: str
     app_url: str
+    # read-only IDL actuals (transformation 016) used by the pre-submit plausibility check
+    idl_bucket: str = "out.c-016-idl-data"
+    idl_table: str = "FT_FIN_IDL_VIT_ADS"
+    cash_account: str = "12200"       # group account 'Cash and cash equivalents'
 
     @property
     def is_dev(self) -> bool:
@@ -82,4 +86,7 @@ def load_settings() -> Settings:
         dev_user=_env("APP_DEV_USER"),
         dev_role=_env("APP_DEV_ROLE", "HQ"),
         app_url=_env("APP_PUBLIC_URL"),
+        idl_bucket=_env("IDL_BUCKET", "out.c-016-idl-data"),
+        idl_table=_env("IDL_TABLE", "FT_FIN_IDL_VIT_ADS"),
+        cash_account=_env("IDL_CASH_ACCOUNT", "12200"),
     )

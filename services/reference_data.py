@@ -189,3 +189,29 @@ class ReferenceData:
             return "missing"
         r = df.iloc[0]
         return f"{r['FX_TYPE']} {r['FX_REFERENCE_MONTH']}"
+
+    # ---------------------------------------------------------------- IDL cash actuals
+    def cash_actuals(self, bu: str, before_period: str) -> dict[str, Decimal] | None:
+        """Month-end cash (group account 12200, LCY) per closed month before `before_period`, from the IDL
+        actuals of transformation 016 (read-only). BALANCE_AMOUNT_YTD of a balance-sheet account is the
+        month-end balance. A month whose total balance is 0 is not closed yet and is skipped.
+        Returns None when the IDL table cannot be read (the check is then skipped, never blocking)."""
+        def load():
+            try:
+                df = read_source(self.gw, self.s.idl_bucket, self.s.idl_table,
+                                 {"CODE_BUSINESS_UNIT": bu, "CODE_FIN_ACCOUNT": self.s.cash_account,
+                                  "CURRENCY": "LCY", "CODE_PERIOD_FREQUENCY": "M", "CODE_PLAN_TYPE": "AC"},
+                                 ["CODE_PERIOD_VALUE", "BALANCE_AMOUNT_YTD"])
+            except Exception:              # noqa: BLE001 - plausibility data only, never break the app
+                return None
+            out: dict[str, Decimal] = {}
+            for period, grp in df.groupby("CODE_PERIOD_VALUE"):
+                total = sum((Decimal(str(v)) for v in grp["BALANCE_AMOUNT_YTD"] if str(v).strip() not in ("", "nan")),
+                            Decimal(0))
+                if total != 0:
+                    out[str(period).replace("-", "")] = total.quantize(Decimal("0.01"))
+            return out
+        data = self._cached(("cash_actuals", bu), load)
+        if data is None:
+            return None
+        return {p: v for p, v in data.items() if p < before_period}
