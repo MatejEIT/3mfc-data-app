@@ -199,10 +199,12 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
 
 
 IC_ADD_HINT = "＋ add IC partner (choose company)"
-_DEL_RENDER = ("function(p){ return p.data._del==='1' ? "
-               "'<span title=\"Delete row (applied when you Save)\" style=\"cursor:pointer;opacity:.6\">🗑</span>'"
-               " : ''; }")
-_DEL_CLICK = "function(p){ if(p.data._del==='1'){ p.node.setDataValue('del', true); } }"
+_DEL_RENDER = r"""function(p){ if(!p.data || p.data._del!=='1') return null;
+  var b = document.createElement('span');
+  b.textContent = '\u{1F5D1}'; b.title = 'Delete row (applied when you Save)';
+  b.style.cursor = 'pointer'; b.style.opacity = '0.6'; b.style.fontSize = '14px';
+  b.addEventListener('click', function(e){ e.stopPropagation(); p.node.setDataValue('del', true); });
+  return b; }"""
 
 
 def _clicked(value) -> bool:
@@ -254,16 +256,20 @@ _FMT = """function(p){ if(p.value===null||p.value===undefined||p.value==='') ret
   const n = Number(p.value); if (isNaN(n)) return String(p.value);
   const d = (p.context && p.context.decimals !== undefined) ? p.context.decimals : 0;
   return n.toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }"""
-_EDITABLE = "function(p){ return (',' + (p.data._editable||'') + ',').indexOf(',' + p.colDef.field + ',') >= 0; }"
-_LABEL_EDITABLE = "function(p){ return p.data._label_ed === '1'; }"
-_LABEL_FMT = (f"function(p){{ if(p.data._ph==='1' && !p.value) return p.data._hint || '{PLACEHOLDER_HINT}'; "
-              "return p.value; }")
-_LABEL_EDITOR = """function(p){ if(p.data._kind==='ICADD'){ return {component:'agSelectCellEditor',
+# Every callback guards `p.data`: AG Grid calls some of them without a row (e.g. the select editor
+# formats its dropdown items through the column's valueFormatter with data = null).
+_EDITABLE = """function(p){ if(!p.data) return false;
+  return (',' + (p.data._editable||'') + ',').indexOf(',' + p.colDef.field + ',') >= 0; }"""
+_LABEL_EDITABLE = "function(p){ return !!p.data && p.data._label_ed === '1'; }"
+_LABEL_FMT = ("function(p){ if(!p.data) return p.value; "
+              "if(p.data._ph==='1' && !p.value) return p.data._hint || '" + PLACEHOLDER_HINT + "'; return p.value; }")
+_LABEL_EDITOR = """function(p){ if(p.data && p.data._kind==='ICADD'){ return {component:'agSelectCellEditor',
   params:{values: (p.data._opts||'').split('|').filter(function(x){return x;})}}; } return undefined; }"""
-_ROW_CLASS = """function(p){ const k=p.data._kind; return {SECTION:'r-section', TOTAL:'r-total', NCM:'r-ncm',
-  SUBTOTAL:'r-subtotal', BALANCE:'r-balance', ARAP:'r-arap', DETAIL:'r-detail'}[k] || ''; }"""
-_LABEL_CLASS = """function(p){ const c=['lbl-'+(p.data._kind||'')]; if(p.data._label_ed==='1') c.push('lbl-input');
-  if(p.data._ph==='1') c.push('lbl-ph'); return c; }"""
+_ROW_CLASS = """function(p){ if(!p.data) return ''; const k=p.data._kind; return {SECTION:'r-section',
+  TOTAL:'r-total', NCM:'r-ncm', SUBTOTAL:'r-subtotal', BALANCE:'r-balance', ARAP:'r-arap',
+  DETAIL:'r-detail'}[k] || ''; }"""
+_LABEL_CLASS = """function(p){ if(!p.data) return []; const c=['lbl-'+(p.data._kind||'')];
+  if(p.data._label_ed==='1') c.push('lbl-input'); if(p.data._ph==='1') c.push('lbl-ph'); return c; }"""
 
 
 def _cell_rules(field: str) -> dict:
@@ -351,8 +357,7 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
                         "cellEditorSelector": JsCode(_LABEL_EDITOR),
                         "cellClass": JsCode(_LABEL_CLASS), "singleClickEdit": True}] + groups
                       + [{"field": "del", "headerName": "", "pinned": "right", "width": 44, "maxWidth": 44,
-                          "editable": False, "resizable": False, "cellRenderer": JsCode(_DEL_RENDER),
-                          "onCellClicked": JsCode(_DEL_CLICK), "headerTooltip": "Delete row"}] + hidden,
+                          "editable": False, "resizable": False, "cellRenderer": JsCode(_DEL_RENDER), "headerTooltip": "Delete row"}] + hidden,
         "defaultColDef": {"resizable": True, "sortable": False, "suppressMovable": True},
         "getRowClass": JsCode(_ROW_CLASS),
         "context": {"decimals": decimals},
