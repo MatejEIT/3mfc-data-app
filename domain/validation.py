@@ -56,7 +56,7 @@ def parse_amount(raw: object) -> Decimal | None:
             if math.isnan(raw):
                 return None
             raise AmountParseError("Infinity is not allowed")
-        value = Decimal(repr(raw))
+        value = Decimal(repr(float(raw)))      # float(): numpy.float64 repr is "np.float64(5.0)"
     else:
         s = str(raw).strip().replace(" ", "").replace(" ", "").replace("'", "")
         if s == "":

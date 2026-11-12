@@ -76,3 +76,10 @@ def test_dictionary_drift_detection():
     assert check_dictionary_drift(rows) == []
     rows[0]["PARENT_METRIC_CODE"] = "SOMETHING_ELSE"
     assert len(check_dictionary_drift(rows)) == 1
+
+
+def test_parse_amount_accepts_numpy_numbers_returned_by_the_grid():
+    import numpy as np
+    assert parse_amount(np.float64(5.5)) == Decimal("5.5")
+    assert parse_amount(np.int64(7)) == Decimal(7)
+    assert parse_amount(np.float64("nan")) is None

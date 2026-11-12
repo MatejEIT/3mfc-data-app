@@ -13,6 +13,8 @@ domain calculation engine the server uses on save, so totals update immediately.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from decimal import Decimal
 
 import pandas as pd
@@ -205,9 +207,13 @@ _DEL_RENDER = r"""class TrashRenderer {
   init(p) {
     this.eGui = document.createElement('span');
     if (!p.data || p.data._del !== '1') return;
-    this.eGui.textContent = '\u{1F5D1}';
     this.eGui.title = 'Delete row (applied when you Save)';
-    this.eGui.style.cursor = 'pointer'; this.eGui.style.opacity = '0.6'; this.eGui.style.fontSize = '14px';
+    this.eGui.setAttribute('role', 'button');
+    this.eGui.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;' +
+      'height:22px;border:1px solid #F5B5B5;border-radius:6px;background:#FFF5F5;cursor:pointer;margin-top:2px;';
+    this.eGui.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#DC2626" ' +
+      'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/>' +
+      '<path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
     this.eGui.addEventListener('click', function (e) { e.stopPropagation(); p.node.setDataValue('del', true); });
   }
   getGui() { return this.eGui; }
@@ -263,7 +269,8 @@ def _ic_add_row(ws: Workspace, lines: list, direction: str) -> dict:
 _FMT = """function(p){ if(p.value===null||p.value===undefined||p.value==='') return '';
   const n = Number(p.value); if (isNaN(n)) return String(p.value);
   const d = (p.context && p.context.decimals !== undefined) ? p.context.decimals : 0;
-  return n.toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }"""
+  const v = Math.abs(n) < Math.pow(10, -d) / 2 ? 0 : n;      // no "-0" for tiny negatives
+  return v.toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }"""
 # Every callback guards `p.data`: AG Grid calls some of them without a row (e.g. the select editor
 # formats its dropdown items through the column's valueFormatter with data = null).
 _EDITABLE = """function(p){ if(!p.data) return false;
@@ -272,7 +279,8 @@ _LABEL_EDITABLE = "function(p){ return !!p.data && p.data._label_ed === '1'; }"
 _LABEL_FMT = ("function(p){ if(!p.data) return p.value; "
               "if(p.data._ph==='1' && !p.value) return p.data._hint || '" + PLACEHOLDER_HINT + "'; return p.value; }")
 _LABEL_EDITOR = """function(p){ if(p.data && p.data._kind==='ICADD'){ return {component:'agSelectCellEditor',
-  params:{values: (p.data._opts||'').split('|').filter(function(x){return x;})}}; } return undefined; }"""
+  params:{values: [''].concat((p.data._opts||'').split('|').filter(function(x){return x;}))}}; }
+  return undefined; }"""
 _ROW_CLASS = """function(p){ if(!p.data) return ''; const k=p.data._kind; return {SECTION:'r-section',
   TOTAL:'r-total', NCM:'r-ncm', SUBTOTAL:'r-subtotal', BALANCE:'r-balance', ARAP:'r-arap',
   DETAIL:'r-detail'}[k] || ''; }"""
@@ -392,9 +400,17 @@ def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key
     resp = AgGrid(frame, gridOptions=grid_options(ws, frame, fields, view, decimals), allow_unsafe_jscode=True,
                   custom_css=grid_css(), height=min(40 + 28 * (len(frame) + 2), 780), theme="balham",
                   update_on=["cellValueChanged"], key=key, fit_columns_on_grid_load=False,
-                  data_return_mode="AS_INPUT")
-    returned = resp.get("data") if isinstance(resp, dict) else getattr(resp, "data", None)
+                  data_return_mode="AS_INPUT",
+                  # unsaved edits live in session_state and the grid is rebuilt from them on every rerun,
+                  # so the server must win (default 'client_wins' ignores new rows / resets after an edit)
+                  server_sync_strategy="server_wins")
     new_pending = dict(pending)
+    # st_aggrid returns its LAST response on every rerun. Only a new grid event may be applied,
+    # otherwise the stale client state is diffed against the new server state again and again
+    # (phantom edits + an endless rerun loop).
+    if not _is_new_event(resp, key):
+        return new_pending, label_pending, result, errors
+    returned = resp.get("data") if isinstance(resp, dict) else getattr(resp, "data", None)
     if returned is not None and len(returned) == len(frame):
         returned = pd.DataFrame(returned).set_index("_line_id")
         original = frame.set_index("_line_id")
@@ -420,6 +436,33 @@ def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key
                     continue
                 new_pending[(line_id, f)] = (after, scale)
     return new_pending, label_pending, result, errors
+
+
+def _event_fingerprint(resp) -> str | None:
+    """Stable identity of the grid event behind a response (None when no event happened yet)."""
+    try:
+        ev = resp.get("eventData") if isinstance(resp, dict) else getattr(resp, "event_data", None)
+    except Exception:  # noqa: BLE001 - st_aggrid may raise before the first interaction
+        return None
+    if not isinstance(ev, dict) or not ev.get("type"):
+        return None
+    data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+    col = ev.get("column") if isinstance(ev.get("column"), dict) else {}
+    raw = json.dumps([ev.get("type"), ev.get("rowIndex"), col.get("colId"), data], sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _is_new_event(resp, key: str) -> bool:
+    import streamlit as st
+
+    fp = _event_fingerprint(resp)
+    if fp is None:
+        return False
+    state_key = f"__grid_last_event::{key}"
+    if st.session_state.get(state_key) == fp:
+        return False
+    st.session_state[state_key] = fp
+    return True
 
 
 def _same(a, b) -> bool:
