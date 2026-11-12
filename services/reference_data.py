@@ -11,7 +11,6 @@ import copy
 import hashlib
 import threading
 import time
-from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -19,14 +18,7 @@ import pandas as pd
 
 from domain.calendar import propose_month, snapshot_periods
 from domain.metrics import AR_AP_METRICS, METRICS
-from domain.ic_partners import (
-    IC_OTHER_INFLOW_METRIC,
-    IC_OTHER_INFLOW_ROW,
-    IC_OTHER_OUTFLOW_METRIC,
-    IC_OTHER_OUTFLOW_ROW,
-    partner_line_id,
-    partners_of,
-)
+from domain.ic_partners import add_partner_rows, partners_of
 from domain.models import CalendarStatus, Line, RowType, WeekPeriod
 from services import schema as S
 from services.config import Settings
@@ -162,29 +154,16 @@ class ReferenceData:
         """Add one input row per IC partner under 'IC (other VI-group)' (inflow row 65, outflow row 89).
         The template row itself becomes 'other / not specified'."""
         ents = self.entities()
-        names = dict(zip(ents["CODE_BUSINESS_UNIT"], ents["NAME_ENTITY"]))
         bu_by_entity = dict(zip(ents["CODE_ENTITY"], ents["CODE_BUSINESS_UNIT"]))
         me = next((e for e, b in bu_by_entity.items() if b == bu), None)
         partners = [bu_by_entity[p] for p in partners_of(me) if p in bu_by_entity] if me else []
         if not partners:
             return lines
-        out: list[Line] = []
-        for ln in lines:
-            if ln.source_row == IC_OTHER_INFLOW_ROW and ln.metric_code == IC_OTHER_INFLOW_METRIC:
-                direction = "IN"
-            elif ln.source_row == IC_OTHER_OUTFLOW_ROW and ln.metric_code == IC_OTHER_OUTFLOW_METRIC:
-                direction = "OUT"
-            else:
-                out.append(ln)
-                continue
-            # partner rows first, then the template row as "other / not specified"
-            out.append(replace(ln, label=f"{ln.label} – other / not specified", order=99))
-            for i, p in enumerate(partners, 1):
-                arrow = "from" if direction == "IN" else "to"
-                out.append(Line(partner_line_id(bu, direction, p), ln.metric_code, RowType.DETAIL,
-                                f"IC {arrow} {p} · {names.get(p, '')}".strip(" ·"), ln.source_row, order=i,
-                                ic_partner=p))
-        return out
+        return add_partner_rows(bu, lines, {"IN": partners, "OUT": partners}, self.company_names())
+
+    def company_names(self) -> dict[str, str]:
+        ents = self.entities()
+        return dict(zip(ents["CODE_BUSINESS_UNIT"], ents["NAME_ENTITY"]))
 
     def seed_rows(self, bu: str, snapshot: str) -> pd.DataFrame:
         return read_source(self.gw, self.s.bucket_weekly, SEED_TABLE,

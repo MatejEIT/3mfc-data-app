@@ -147,17 +147,33 @@ def validate_label_edits(
     edits: dict[str, str],
     lines_by_id: dict[str, Line],
     business_unit: str,
+    valid_companies: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[dict[str, str], list[Issue]]:
-    """Customer / project names typed by the entity (yellow column B in the Excel template)."""
+    """Customer / project names typed by the entity (yellow column B in the Excel template) and
+    IC partners added with '＋ add IC partner' (marker labels)."""
+    from domain.ic_partners import parse_partner_marker, partner_line_id
     from domain.metrics import MAX_LABEL_LENGTH, is_nameable
 
     ok: dict[str, str] = {}
     issues: list[Issue] = []
     for line_id, raw in edits.items():
+        marker = parse_partner_marker(raw)
+        if marker:
+            direction, partner = marker
+            if partner == business_unit or partner not in valid_companies \
+                    or line_id != partner_line_id(business_unit, direction, partner):
+                issues.append(Issue(Severity.BLOCKING, "E_IC_PARTNER", f"'{partner}' cannot be added as IC partner",
+                                    business_unit, line_id=line_id))
+            else:
+                ok[line_id] = str(raw)
+            continue
         line = lines_by_id.get(line_id)
         if line is None:
             issues.append(Issue(Severity.BLOCKING, "E_UNKNOWN_LINE", "Unknown forecast line", business_unit,
                                 line_id=line_id))
+            continue
+        if line.ic_partner and not str(raw or "").strip():
+            ok[line_id] = ""                     # remove an IC partner row the company added itself
             continue
         if not is_nameable(line.metric_code, line.label):
             issues.append(Issue(Severity.BLOCKING, "E_LABEL_FIXED", f"'{line.label}' is a fixed template row",

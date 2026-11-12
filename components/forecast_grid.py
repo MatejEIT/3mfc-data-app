@@ -19,6 +19,14 @@ import pandas as pd
 
 from components import theme as T
 from domain.calc import ForecastResult, calculate, is_cell_editable
+from domain.ic_partners import (
+    base_direction,
+    parse_partner_marker,
+    partner_direction,
+    partner_line_id,
+    partner_marker,
+    with_added_partners,
+)
 from domain.metrics import METRICS, Aggregation, InputMode, Section, is_nameable, is_placeholder_label
 from domain.models import InputCell, Provenance, RowType, ValueOrigin, ValueState, month_slot
 from domain.validation import AmountParseError, Edit, parse_amount
@@ -51,12 +59,19 @@ def to_storage(raw: object, scale: int) -> Decimal | None:
     return None if value is None else value * scale
 
 
-def preview_cells(ws: Workspace, pending: PendingEdits) -> tuple[dict, dict[tuple[str, str], str]]:
+def effective_lines(ws: Workspace, label_pending: LabelEdits | None = None) -> list:
+    """Workspace lines + IC partner rows added in this session (not saved yet)."""
+    return with_added_partners(ws.business_unit, ws.lines, {**ws.state.labels, **(label_pending or {})},
+                               ws.company_names)
+
+
+def preview_cells(ws: Workspace, pending: PendingEdits, lines_by_id: dict | None = None
+                  ) -> tuple[dict, dict[tuple[str, str], str]]:
     """Apply pending edits for preview. Returns cells and per-cell parse errors."""
     cells = dict(ws.state.cells)
     errors: dict[tuple[str, str], str] = {}
     for (line_id, field), (raw, scale) in pending.items():
-        line = ws.lines_by_id.get(line_id)
+        line = (lines_by_id or ws.lines_by_id).get(line_id)
         if line is None:
             continue
         try:
@@ -111,10 +126,11 @@ def _state_code(cells: dict, line, field: str, editable: bool, pending: PendingE
 
 def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, pending: PendingEdits,
                 errors: dict, read_only: bool, show_empty: bool = False, scale: int = 1000,
-                label_pending: LabelEdits | None = None, periods: list[str] | None = None
-                ) -> tuple[pd.DataFrame, list[str]]:
+                label_pending: LabelEdits | None = None, periods: list[str] | None = None,
+                lines: list | None = None) -> tuple[pd.DataFrame, list[str]]:
     """`periods` limits the visible months (one month at a time keeps the grid narrow)."""
     label_pending = label_pending or {}
+    lines = lines if lines is not None else ws.lines
     weeks_by_p: dict[str, list] = {}
     for w in ws.calendar:
         weeks_by_p.setdefault(w.code_period_value, []).append(w)
@@ -129,10 +145,12 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
     rows = []
     current_section = None
     free_slot_shown: set[str] = set()
-    for ln in ws.lines:
+    for ln in lines:
         m = METRICS[ln.metric_code]
         nameable = is_nameable(ln.metric_code, ln.label)
         label = label_pending.get(ln.line_id, ws.label(ln))
+        if parse_partner_marker(label):
+            label = ln.label
         placeholder = nameable and is_placeholder_label(label)
         if nameable and placeholder and not _has_values(cells, ln.line_id, pending) and not show_empty:
             # Excel has ~15 free slots per list; show only the first free one ("add a customer").
@@ -144,9 +162,15 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
             current_section = m.section
             rows.append({"_line_id": f"__section__{m.section.name}", "_kind": "SECTION",
                          "Line": SECTION_TITLES[m.section], "_editable": "", "_label_ed": "", "_ph": ""})
+        direction = base_direction(ln)
+        if direction and not read_only:
+            rows.append(_ic_add_row(ws, lines, direction))        # "＋ add IC partner" above the 'other' row
         row = {"_line_id": ln.line_id, "_kind": _row_kind(ln), "Line": "" if placeholder else label,
                "_metric": m.label, "_label_ed": "1" if nameable and not read_only else "",
-               "_ph": "1" if placeholder else ""}
+               "_ph": "1" if placeholder else "",
+               "_del": "1" if not read_only and (ln.ic_partner or (nameable and (
+                   not placeholder or _has_values(cells, ln.line_id, pending)))) else "",
+               "del": False}
         editable_fields = []
         for f in fields:
             is_month = f.endswith("_M")
@@ -174,6 +198,57 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
     return pd.DataFrame(rows), fields
 
 
+IC_ADD_HINT = "＋ add IC partner (choose company)"
+_DEL_RENDER = ("function(p){ return p.data._del==='1' ? "
+               "'<span title=\"Delete row (applied when you Save)\" style=\"cursor:pointer;opacity:.6\">🗑</span>'"
+               " : ''; }")
+_DEL_CLICK = "function(p){ if(p.data._del==='1'){ p.node.setDataValue('del', true); } }"
+
+
+def _clicked(value) -> bool:
+    return value is True or str(value).strip().lower() in ("true", "1")
+
+
+def _template_placeholder(metric_code: str) -> str:
+    return "Name project expense" if metric_code == "PROJECT_EXPENSE_DETAIL" else "Project name and Customer name"
+
+
+def _stage_delete(ws: Workspace, lines_by_id: dict, cells: dict, line_id: str,
+                  pending: PendingEdits, label_pending: LabelEdits) -> None:
+    """Trash icon: stage the deletion of a row as unsaved changes (undo with Discard).
+    - IC partner added by the company: the row is removed
+    - preset IC partner: its values are cleared (the pair itself is configuration)
+    - customer / project row: values cleared and the slot returns to '＋ type customer / project name'"""
+    line = lines_by_id.get(line_id)
+    if line is None:
+        return
+    for key in [k for k in pending if k[0] == line_id]:
+        pending.pop(key)
+    if line.ic_partner:
+        saved = parse_partner_marker(ws.state.labels.get(line_id, ""))
+        if parse_partner_marker(label_pending.get(line_id, "")) and not saved:
+            label_pending.pop(line_id)            # added in this session only -> just forget it
+            return
+        if saved:
+            label_pending[line_id] = ""            # remove on Save
+            return
+    for (lid, field), c in cells.items():
+        if lid == line_id and c.state == ValueState.ENTERED:
+            pending[(lid, field)] = ("", 1)
+    if is_nameable(line.metric_code, line.label):
+        label_pending[line_id] = _template_placeholder(line.metric_code)
+
+
+def _ic_add_row(ws: Workspace, lines: list, direction: str) -> dict:
+    """Row with a company dropdown in the first column; picking a company adds a partner row."""
+    taken = {ln.ic_partner for ln in lines if ln.ic_partner and partner_direction(ln) == direction}
+    opts = [f"{bu} · {name}" for bu, name in sorted(ws.company_names.items())
+            if bu != ws.business_unit and bu not in taken]
+    return {"_line_id": f"__icadd__::{direction}", "_kind": "ICADD", "Line": "", "_label_ed": "1", "_ph": "1",
+            "_hint": IC_ADD_HINT, "_opts": "|".join(opts), "_editable": "",
+            "_metric": "Add a row for another group company you have intercompany payments with"}
+
+
 # ----------------------------------------------------------------------------- AgGrid options
 _FMT = """function(p){ if(p.value===null||p.value===undefined||p.value==='') return '';
   const n = Number(p.value); if (isNaN(n)) return String(p.value);
@@ -181,7 +256,10 @@ _FMT = """function(p){ if(p.value===null||p.value===undefined||p.value==='') ret
   return n.toLocaleString('en-US',{minimumFractionDigits:d, maximumFractionDigits:d}); }"""
 _EDITABLE = "function(p){ return (',' + (p.data._editable||'') + ',').indexOf(',' + p.colDef.field + ',') >= 0; }"
 _LABEL_EDITABLE = "function(p){ return p.data._label_ed === '1'; }"
-_LABEL_FMT = f"function(p){{ if(p.data._ph==='1' && !p.value) return '{PLACEHOLDER_HINT}'; return p.value; }}"
+_LABEL_FMT = (f"function(p){{ if(p.data._ph==='1' && !p.value) return p.data._hint || '{PLACEHOLDER_HINT}'; "
+              "return p.value; }")
+_LABEL_EDITOR = """function(p){ if(p.data._kind==='ICADD'){ return {component:'agSelectCellEditor',
+  params:{values: (p.data._opts||'').split('|').filter(function(x){return x;})}}; } return undefined; }"""
 _ROW_CLASS = """function(p){ const k=p.data._kind; return {SECTION:'r-section', TOTAL:'r-total', NCM:'r-ncm',
   SUBTOTAL:'r-subtotal', BALANCE:'r-balance', ARAP:'r-arap', DETAIL:'r-detail'}[k] || ''; }"""
 _LABEL_CLASS = """function(p){ const c=['lbl-'+(p.data._kind||'')]; if(p.data._label_ed==='1') c.push('lbl-input');
@@ -219,6 +297,7 @@ def grid_css() -> dict:
         ".r-balance": {"font-weight": "700"},
         ".r-detail .lbl-DETAIL": {"font-style": "italic", "padding-left": "26px !important"},
         ".lbl-ARAP": {"padding-left": "14px !important"},
+        ".lbl-ICADD": {"padding-left": "26px !important", "font-style": "italic"},
         ".lbl-input": {"background-color": f"{T.XL_INPUT} !important", "cursor": "text"},
         ".lbl-ph": {"color": f"{T.MUTED} !important"},
         # cells
@@ -269,7 +348,11 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
         "columnDefs": [{"field": "Line", "headerName": unit_label(ws.currency, 1000 if decimals == 0 else 1),
                         "pinned": "left", "width": 270, "minWidth": 200, "tooltipField": "Line",
                         "editable": JsCode(_LABEL_EDITABLE), "valueFormatter": JsCode(_LABEL_FMT),
-                        "cellClass": JsCode(_LABEL_CLASS), "singleClickEdit": True}] + groups + hidden,
+                        "cellEditorSelector": JsCode(_LABEL_EDITOR),
+                        "cellClass": JsCode(_LABEL_CLASS), "singleClickEdit": True}] + groups
+                      + [{"field": "del", "headerName": "", "pinned": "right", "width": 44, "maxWidth": 44,
+                          "editable": False, "resizable": False, "cellRenderer": JsCode(_DEL_RENDER),
+                          "onCellClicked": JsCode(_DEL_CLICK), "headerTooltip": "Delete row"}] + hidden,
         "defaultColDef": {"resizable": True, "sortable": False, "suppressMovable": True},
         "getRowClass": JsCode(_ROW_CLASS),
         "context": {"decimals": decimals},
@@ -287,10 +370,11 @@ def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key
     from st_aggrid import AgGrid
 
     label_pending = dict(label_pending or {})
-    cells, errors = preview_cells(ws, pending)
-    result = calculate(ws.lines, ws.calendar, cells)
+    lines = effective_lines(ws, label_pending)
+    cells, errors = preview_cells(ws, pending, {ln.line_id: ln for ln in lines})
+    result = calculate(lines, ws.calendar, cells)
     frame, fields = build_frame(ws, result, cells, view, pending, errors, read_only, show_empty, scale, label_pending,
-                                periods)
+                                periods, lines)
     decimals = 0 if scale > 1 else 2
     resp = AgGrid(frame, gridOptions=grid_options(ws, frame, fields, view, decimals), allow_unsafe_jscode=True,
                   custom_css=grid_css(), height=min(40 + 28 * (len(frame) + 2), 780), theme="balham",
@@ -302,6 +386,16 @@ def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key
         returned = pd.DataFrame(returned).set_index("_line_id")
         original = frame.set_index("_line_id")
         for line_id, row in original.iterrows():
+            if row.get("_kind") == "ICADD" and "Line" in returned.columns:
+                choice = str(returned.at[line_id, "Line"] or "").strip()
+                if choice and choice != IC_ADD_HINT:
+                    direction, partner = str(line_id).split("::")[1], choice.split(" · ")[0].strip()
+                    new_id = partner_line_id(ws.business_unit, direction, partner)
+                    label_pending[new_id] = partner_marker(direction, partner)
+                continue
+            if row.get("_del") == "1" and "del" in returned.columns and _clicked(returned.at[line_id, "del"]):
+                _stage_delete(ws, {ln.line_id: ln for ln in lines}, cells, str(line_id), new_pending, label_pending)
+                continue
             if row.get("_label_ed") == "1" and "Line" in returned.columns:
                 new_label = str(returned.at[line_id, "Line"] or "").strip()
                 if new_label != str(row.get("Line") or "").strip() and new_label != PLACEHOLDER_HINT:

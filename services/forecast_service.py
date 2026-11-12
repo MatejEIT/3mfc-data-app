@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from domain.calc import ForecastResult, calculate, ordered_weeks
+from domain.ic_partners import parse_partner_marker, with_added_partners
 from domain.metrics import IC_SPLIT_METRIC, METRICS, InputMode, is_nameable, is_placeholder_label
 from domain.models import (
     ChangeType,
@@ -48,6 +49,7 @@ class Workspace:
     submitted_revision_id: str
     valid_counterparties: set[str]
     issues: list[Issue] = field(default_factory=list)
+    company_names: dict[str, str] = field(default_factory=dict)
 
     @property
     def first_week(self) -> str:
@@ -59,7 +61,10 @@ class Workspace:
 
     def label(self, line: Line) -> str:
         """Entity-typed customer/project name if any, otherwise the template text."""
-        return self.state.labels.get(line.line_id) or line.label
+        override = self.state.labels.get(line.line_id)
+        if not override or parse_partner_marker(override):     # IC partner rows keep their generated name
+            return line.label
+        return override
 
 
 @dataclass
@@ -79,9 +84,10 @@ class ForecastService:
         user.require_view(bu)
         ent = self.ref.entities()
         ent = ent[ent["CODE_BUSINESS_UNIT"] == bu].iloc[0]
-        lines = self.ref.lines(bu)
+        names = self.ref.company_names()
         calendar = self.ref.calendar(snapshot)
         state = self.repo.load_state(snapshot, bu, revision)
+        lines = with_added_partners(bu, self.ref.lines(bu), state.labels, names)
         result = calculate(lines, calendar, state.cells)
         sub = self.repo.submissions(snapshot)
         sub = sub[sub["CODE_BUSINESS_UNIT"] == bu]
@@ -92,19 +98,20 @@ class ForecastService:
             snapshot, bu, str(ent["NAME_ENTITY"]), str(ent["CODE_LOCAL_CURRENCY"]), str(ent["CODE_REGION"]),
             lines, calendar, state, result, fx, self.ref.fx_reference(bu, snapshot), status,
             sub.iloc[0]["SUBMISSION_ID"] if not sub.empty else "",
-            sub.iloc[0]["SUBMITTED_REVISION_ID"] if not sub.empty else "", cps)
+            sub.iloc[0]["SUBMITTED_REVISION_ID"] if not sub.empty else "", cps, company_names=names)
         ws.issues = self._validate(ws, state.cells, state.ic_details,
                                    set(state.head.carry_forward_reviewed) if state.head else set())
         return ws
 
     def _validate(self, ws: Workspace, cells, ic, cf_reviewed: set[str],
-                  labels: dict[str, str] | None = None) -> list[Issue]:
-        result = calculate(ws.lines, ws.calendar, cells)
-        issues = validate_forecast(ws.business_unit, ws.lines, ws.calendar, cells, result, ic,
+                  labels: dict[str, str] | None = None, lines: list[Line] | None = None) -> list[Issue]:
+        lines = lines or ws.lines
+        result = calculate(lines, ws.calendar, cells)
+        issues = validate_forecast(ws.business_unit, lines, ws.calendar, cells, result, ic,
                                    ws.valid_counterparties, {p: v is not None for p, v in ws.fx_rates.items()},
                                    cf_reviewed)
         labels = ws.state.labels if labels is None else labels
-        for ln in ws.lines:
+        for ln in lines:
             if not is_nameable(ln.metric_code, ln.label):
                 continue
             has_value = any(c.state == ValueState.ENTERED for (lid, _), c in cells.items() if lid == ln.line_id)
@@ -123,9 +130,13 @@ class ForecastService:
         if submit and submitted:
             return SaveOutcome(None, [], "Forecast is already submitted.")
 
-        ok, issues = validate_edits(edits, ws.lines_by_id, ws.calendar, ws.business_unit)
-        ok_labels, label_issues = validate_label_edits(label_edits or {}, ws.lines_by_id, ws.business_unit)
-        issues += label_issues
+        ok_labels, issues = validate_label_edits(label_edits or {}, ws.lines_by_id, ws.business_unit,
+                                                 ws.valid_counterparties)
+        # IC partners added in this save become real lines before the values are validated
+        lines = with_added_partners(ws.business_unit, ws.lines, {**ws.state.labels, **ok_labels}, ws.company_names)
+        lines_by_id = {ln.line_id: ln for ln in lines}
+        ok, edit_issues = validate_edits(edits, lines_by_id, ws.calendar, ws.business_unit)
+        issues += edit_issues
         if has_blocking(issues):
             return SaveOutcome(None, issues, "Nothing saved - fix the highlighted cells.")
 
@@ -136,7 +147,7 @@ class ForecastService:
         cells = dict(ws.state.cells)
         audit: list[AuditEvent] = []
         for e, value in ok:
-            line = ws.lines_by_id[e.line_id]
+            line = lines_by_id[e.line_id]
             old = cells.get((e.line_id, e.week_code))
             mode = METRICS[line.metric_code].input_mode
             if value is None:
@@ -156,7 +167,23 @@ class ForecastService:
 
         labels = dict(ws.state.labels)
         for line_id, new_label in ok_labels.items():
-            line = ws.lines_by_id[line_id]
+            line = lines_by_id[line_id]
+            if line.ic_partner and not new_label:
+                # remove a partner row the company added: drop the marker and blank its values
+                if parse_partner_marker(labels.get(line_id, "")):
+                    labels.pop(line_id)
+                    for key, c in list(cells.items()):
+                        if key[0] == line_id and c.state == ValueState.ENTERED:
+                            cells[key] = replace(c, amount=None, state=ValueState.BLANK, origin=origin)
+                    audit.append(AuditEvent("", "", line_id, line.metric_code, None, None, "LABEL", "LABEL",
+                                            change_type, f"IC partner removed: {line.label}"))
+                continue
+            if parse_partner_marker(new_label):
+                if labels.get(line_id) != new_label:
+                    labels[line_id] = new_label
+                    audit.append(AuditEvent("", "", line_id, line.metric_code, None, None, "LABEL", "LABEL",
+                                            change_type, f"IC partner added: {line.label}"))
+                continue
             old_label = ws.label(line)
             if new_label == old_label or (not new_label and line_id not in labels):
                 continue
@@ -174,7 +201,7 @@ class ForecastService:
                           else (ws.state.head.carry_forward_reviewed if ws.state.head else set()))
         prev_cf = set(ws.state.head.carry_forward_reviewed) if ws.state.head else set()
 
-        forecast_issues = self._validate(ws, cells, ic, cf_reviewed, labels)
+        forecast_issues = self._validate(ws, cells, ic, cf_reviewed, labels, lines)
         if submit and has_blocking(forecast_issues):
             return SaveOutcome(None, forecast_issues, "Submit refused - resolve BLOCKING issues first.")
 
@@ -195,7 +222,7 @@ class ForecastService:
         rev = self.repo.commit(CommitRequest(
             ws.snapshot, ws.business_unit, ws.currency, ws.state.revision_no, kind, cells, ic, audit,
             user.email, user.role, comment, idempotency_key, submission_id, frozenset(cf_reviewed),
-            labels=labels, metric_by_line={ln.line_id: ln.metric_code for ln in ws.lines}))
+            labels=labels, metric_by_line={ln.line_id: ln.metric_code for ln in lines}))
         msg = {RevisionKind.SUBMIT: "Forecast submitted", RevisionKind.HQ_ADJUSTMENT: "HQ adjustment saved"}.get(
             kind, "Draft saved")
         return SaveOutcome(rev, forecast_issues, f"{msg} – revision {rev.revision_no}.")

@@ -43,3 +43,50 @@ def test_partner_rows_are_inputs_and_roll_into_the_totals(snapshot_service, fore
 
 def test_company_without_partner_has_no_extra_rows(ref):
     assert not any(ln.ic_partner for ln in ref.lines("V001DE"))
+
+
+def test_user_can_add_an_ic_partner_row_and_it_rolls_over(snapshot_service, forecast_service, repo, hq):
+    from domain.ic_partners import partner_marker
+    snapshot_service.import_initial(hq, "202610", [BU])
+    ws = forecast_service.open(hq, "202610", BU)
+    new_line = partner_line_id(BU, "OUT", "V001DE")
+    assert new_line not in ws.lines_by_id
+    out = forecast_service.save(hq, ws, [Edit(new_line, "202612_W2", "75")], None, "new IC partner", "add1",
+                                label_edits={new_line: partner_marker("OUT", "V001DE")})
+    assert out.revision is not None, [i.message for i in out.issues]
+    ws2 = forecast_service.open(hq, "202610", BU)
+    line = ws2.lines_by_id[new_line]
+    assert ws2.label(line) == "IC to V001DE · VITRONIC Machine Vision GmbH"
+    assert ws2.result.line_weekly[(new_line, "202612_W2")].amount == Decimal(75)
+    audit = repo.audit("202610", BU)
+    assert audit["COMMENT"].str.contains("IC partner added").any()
+
+    snapshot_service.create_rollover(hq, "202611", [BU])
+    nov = forecast_service.open(hq, "202611", BU)
+    assert new_line in nov.lines_by_id
+    assert nov.state.cells[(new_line, "202612_W2")].amount == Decimal(75)
+
+
+def test_invalid_ic_partner_is_rejected(snapshot_service, forecast_service, hq):
+    from domain.ic_partners import partner_marker
+    snapshot_service.import_initial(hq, "202610", [BU])
+    ws = forecast_service.open(hq, "202610", BU)
+    own = partner_line_id(BU, "IN", BU)
+    out = forecast_service.save(hq, ws, [], None, "", "bad", label_edits={own: partner_marker("IN", BU)})
+    assert out.revision is None and out.issues[0].code == "E_IC_PARTNER"
+
+
+def test_added_ic_partner_can_be_removed(snapshot_service, forecast_service, repo, hq):
+    from domain.ic_partners import partner_marker
+    snapshot_service.import_initial(hq, "202610", [BU])
+    ws = forecast_service.open(hq, "202610", BU)
+    new_line = partner_line_id(BU, "IN", "V001DE")
+    forecast_service.save(hq, ws, [Edit(new_line, "202610_W1", "9")], None, "", "a1",
+                          label_edits={new_line: partner_marker("IN", "V001DE")})
+    ws = forecast_service.open(hq, "202610", BU)
+    assert new_line in ws.lines_by_id
+    out = forecast_service.save(hq, ws, [], None, "not needed", "r1", label_edits={new_line: ""})
+    assert out.revision is not None, [i.message for i in out.issues]
+    ws = forecast_service.open(hq, "202610", BU)
+    assert new_line not in ws.lines_by_id
+    assert repo.audit("202610", BU)["COMMENT"].str.contains("IC partner removed").any()

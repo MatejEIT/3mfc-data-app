@@ -23,6 +23,7 @@ from domain.models import (
     WeekPeriod,
     month_slot,
 )
+from domain.ic_partners import with_added_partners
 from domain.rolling import build_rollover
 from services.auth_service import User
 from services.reference_data import ReferenceData
@@ -122,7 +123,8 @@ class SnapshotService:
             if prev.head is None:
                 res.skipped[bu] = f"no committed forecast in {prev_snapshot}"
                 continue
-            lines = self.ref.lines(bu)
+            # include IC partners the company added itself (stored as markers in the line labels)
+            lines = with_added_partners(bu, self.ref.lines(bu), prev.labels, self.ref.company_names())
             prev_result = calculate(lines, prev_cal, prev.cells)
             now = utc_now()
             roll = build_rollover(
