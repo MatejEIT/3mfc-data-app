@@ -199,12 +199,20 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
 
 
 IC_ADD_HINT = "＋ add IC partner (choose company)"
-_DEL_RENDER = r"""function(p){ if(!p.data || p.data._del!=='1') return null;
-  var b = document.createElement('span');
-  b.textContent = '\u{1F5D1}'; b.title = 'Delete row (applied when you Save)';
-  b.style.cursor = 'pointer'; b.style.opacity = '0.6'; b.style.fontSize = '14px';
-  b.addEventListener('click', function(e){ e.stopPropagation(); p.node.setDataValue('del', true); });
-  return b; }"""
+# Must be a component *class* (init/getGui): st_aggrid runs AG Grid inside React, where a renderer
+# function returning a DOM element crashes the grid (React error #31) and a returned string is plain text.
+_DEL_RENDER = r"""class TrashRenderer {
+  init(p) {
+    this.eGui = document.createElement('span');
+    if (!p.data || p.data._del !== '1') return;
+    this.eGui.textContent = '\u{1F5D1}';
+    this.eGui.title = 'Delete row (applied when you Save)';
+    this.eGui.style.cursor = 'pointer'; this.eGui.style.opacity = '0.6'; this.eGui.style.fontSize = '14px';
+    this.eGui.addEventListener('click', function (e) { e.stopPropagation(); p.node.setDataValue('del', true); });
+  }
+  getGui() { return this.eGui; }
+  refresh() { return false; }
+}"""
 
 
 def _clicked(value) -> bool:
