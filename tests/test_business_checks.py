@@ -115,3 +115,23 @@ def test_submit_records_accepted_findings_in_audit(svc, hq):
     audit = repo.audit("202610", BU)
     note = audit[audit["CHANGE_TYPE"] == "ENTITY_SUBMIT"]["COMMENT"].iloc[0]
     assert note.startswith("taxes refund expected") and "W_NEGATIVE_OUTFLOW" in note
+
+
+def test_negative_cash_is_one_finding_in_thousands_with_the_week():
+    from domain.validation import validate_forecast
+    cells = {c.key: c for c in [cell("L_OPENING_CASH_BALANCE", "202610_W1", 100000),
+                                cell("L_TAXES", "202610_W2", 886000)]}
+    res = calculate(TEMPLATE, CAL_202610, cells)
+    neg = [i for i in validate_forecast(BU, TEMPLATE, CAL_202610, cells, res, [], set(), {}, set())
+           if i.code == "W_NEGATIVE_CASH"]
+    assert len(neg) == 1 and "-786k" in neg[0].message and neg[0].week == "202610_W2"
+    assert "11 week(s)" in neg[0].message
+
+
+def test_hq_only_findings_hidden_from_entities():
+    from domain.models import Issue
+    from domain.validation import visible_issues
+    found = [Issue(Severity.WARNING, "W_FX_MISSING", "fx"), Issue(Severity.WARNING, "W_CALENDAR_PROPOSED", "cal"),
+             Issue(Severity.WARNING, "W_NEGATIVE_CASH", "cash")]
+    assert [i.code for i in visible_issues(found, is_hq=False)] == ["W_NEGATIVE_CASH"]
+    assert len(visible_issues(found, is_hq=True)) == 3

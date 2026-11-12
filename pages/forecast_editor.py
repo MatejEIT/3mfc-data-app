@@ -17,6 +17,7 @@ from components import forecast_grid as G
 from components import theme as T
 from domain.calendar import snapshot_periods
 from domain.models import IcDetail, Severity, SubmissionStatus, ValueOrigin
+from domain.validation import visible_issues
 from services.auth_service import AccessDenied
 from services.bootstrap import get_context, require_user
 from services.repository import RevisionConflict
@@ -89,7 +90,7 @@ ic_rows: list[IcDetail] = st.session_state.setdefault(ic_key, list(ws.state.ic_d
 submitted = ws.status == SubmissionStatus.SUBMITTED
 read_only = not user.can_edit(bu, submitted)
 unit = f"k{ws.currency}"
-issues = st.session_state.get(f"issues::{ns}") or ws.issues
+issues = visible_issues(st.session_state.get(f"issues::{ns}") or ws.issues, user.is_hq)
 n_block = sum(i.severity == Severity.BLOCKING for i in issues)
 n_warn = sum(i.severity == Severity.WARNING for i in issues)
 
@@ -200,7 +201,7 @@ with work:
 
     @st.dialog("Validations", width="large")
     def validation_dialog() -> None:
-        found = st.session_state.get(val_key, [])
+        found = visible_issues(st.session_state.get(val_key, []), user.is_hq)
         blocking = [i for i in found if i.severity == Severity.BLOCKING]
         questions = [i for i in found if i.code.startswith("Q_")]
         warnings = [i for i in found if i.severity == Severity.WARNING]

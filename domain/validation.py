@@ -224,12 +224,16 @@ def validate_forecast(
                                     f"{METRICS[metric].label} for {p} is missing (empty is not zero)",
                                     bu, p, month_slot(p), mlines[0].line_id if mlines else "", metric))
 
-    # Negative cash.
-    for w in weeks:
-        v = result.metric_weekly[("CLOSING_CASH_BALANCE", w.code_week_period)].amount
-        if v is not None and v < 0:
-            issues.append(Issue(Severity.WARNING, "W_NEGATIVE_CASH", f"Negative closing cash balance {v:,.0f}",
-                                bu, w.code_period_value, w.code_week_period, metric_code="CLOSING_CASH_BALANCE"))
+    # Negative cash: one finding with the number of weeks and the lowest balance (in thousands, like the grid).
+    negative = [(v, w) for w in weeks
+                if (v := result.metric_weekly[("CLOSING_CASH_BALANCE", w.code_week_period)].amount) is not None
+                and v < 0]
+    if negative:
+        low, lw = min(negative, key=lambda x: x[0])
+        issues.append(Issue(Severity.WARNING, "W_NEGATIVE_CASH",
+                            f"Closing cash is negative in {len(negative)} week(s); lowest {low / 1000:,.0f}k in week "
+                            f"{lw.start:%d %b}–{lw.end:%d %b %Y}",
+                            bu, lw.code_period_value, lw.code_week_period, metric_code="CLOSING_CASH_BALANCE"))
 
     # IC with partner companies is entered directly in the grid (one row per partner, see
     # domain/ic_partners.py), so there is no separate split to reconcile. Legacy split rows are
@@ -266,6 +270,14 @@ def validate_forecast(
         issues.append(Issue(Severity.WARNING, "W_EMPTY_FORECAST", "No values entered", bu))
 
     return issues
+
+
+# Findings only HQ can act on (week calendar confirmation, FX rates) - not shown to entity users.
+HQ_ONLY_CODES = frozenset({"W_CALENDAR_PROPOSED", "W_FX_MISSING"})
+
+
+def visible_issues(issues: list[Issue], is_hq: bool) -> list[Issue]:
+    return list(issues) if is_hq else [i for i in issues if i.code not in HQ_ONLY_CODES]
 
 
 def has_blocking(issues: list[Issue]) -> bool:
