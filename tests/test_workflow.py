@@ -176,6 +176,7 @@ def test_rolling_2_plus_1(imported, forecast_service, snapshot_service, repo, en
     assert {i.code for i in res.issues} >= {"I_CARRY_FORWARD", "W_CALENDAR_PROPOSED"}
 
     ws_nov = forecast_service.open(entity_user, "202611", BU)
-    assert "B_CARRY_FORWARD_UNREVIEWED" in {i.code for i in ws_nov.issues}
+    cf = [i for i in ws_nov.issues if i.code == "W_CARRY_FORWARD_UNREVIEWED"]
+    assert cf and all(i.severity.value == "WARNING" for i in cf)          # a reminder, never blocks the submit
     # snapshot 202610 history is untouched
     assert repo.head("202610", BU).revision_no == 2

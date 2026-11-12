@@ -242,13 +242,13 @@ def validate_forecast(
             issues.append(Issue(Severity.BLOCKING, "B_IC_SELF", "Entity cannot be its own IC counterparty",
                                 bu, d.code_period_value, d.code_week_period, metric_code=IC_SPLIT_METRIC))
 
-    # Carry-forward month must be reviewed explicitly by the entity.
+    # Carry-forward month: a reminder to check it (keeping the pre-filled values is allowed).
     cf_periods = sorted({c.code_period_value for c in cells.values() if c.origin == ValueOrigin.CARRY_FORWARD})
     for p in cf_periods:
         if p not in carry_forward_reviewed:
-            issues.append(Issue(Severity.BLOCKING, "B_CARRY_FORWARD_UNREVIEWED",
-                                f"{p} was pre-filled from the previous month (CARRY_FORWARD) and must be reviewed",
-                                bu, p))
+            issues.append(Issue(Severity.WARNING, "W_CARRY_FORWARD_UNREVIEWED",
+                                f"{p} is still pre-filled from the previous month – please check the values are "
+                                "still valid", bu, p))
 
     # Calendar still a proposal.
     for p in sorted({w.code_period_value for w in weeks if w.needs_confirmation}):

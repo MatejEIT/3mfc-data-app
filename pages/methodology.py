@@ -38,7 +38,7 @@ A calendar for a new month is generated as a **proposal** (`PROPOSED_CONFIRM_REQ
 ### Rolling 2+1
 Snapshot *n+1* is created from the latest **committed** revision of snapshot *n*: months 1–2 roll over
 interval by interval (`ROLLOVER`), month 3 is copied from the previous month slot by slot (`CARRY_FORWARD`)
-and must be reviewed explicitly. The new opening cash equals the calculated closing cash of the preceding interval.
+and is highlighted for review (a reminder, not a blocker). The new opening cash equals the calculated closing cash of the preceding interval.
 
 ### FX
 IDL rate type `SK (BS)` of the month **before** the snapshot, applied to all three months.
@@ -57,7 +57,7 @@ entity for a summary notification.
 
 ### Validations (Validate & submit)
 **Must be fixed before submit:** values must be numbers (max 2 decimals), opening cash of the first week is
-entered, every forecast month has at least one cash-flow value (0 counts), pre-filled months are reviewed.
+entered, every forecast month has at least one cash-flow value (0 counts).
 
 **Plausibility checks – shown in the pop-up, do not block:** the entity can go back to *Edit* or submit
 anyway with a comment; the comment and the accepted findings are stored in the audit trail.
@@ -67,5 +67,6 @@ anyway with a comment; the comment and the accepted findings are stored in the a
 | Negative inflow / outflow | inflows and outflows are entered as positive numbers (bank financing may be ±) |
 | Previous snapshot | month-end closing cash differs more than ±30 % from the previous snapshot's forecast |
 | Actuals | average forecast closing cash differs more than ±30 % from the average month-end cash of the last 6 closed months (IDL actuals, account 12200, LCY) |
+| Pre-filled month | the 3rd month is still pre-filled from the previous snapshot (keeping it is allowed) |
 | Company questions | fixed reminders, e.g. V004: factoring repayment |
 """)
