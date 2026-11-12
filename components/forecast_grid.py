@@ -172,7 +172,7 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
                "_ph": "1" if placeholder else "",
                "_del": "1" if not read_only and (ln.ic_partner or (nameable and (
                    not placeholder or _has_values(cells, ln.line_id, pending)))) else "",
-               "del": False}
+               "_del_click": False}
         editable_fields = []
         for f in fields:
             is_month = f.endswith("_M")
@@ -214,7 +214,7 @@ _DEL_RENDER = r"""class TrashRenderer {
     this.eGui.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#DC2626" ' +
       'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/>' +
       '<path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
-    this.eGui.addEventListener('click', function (e) { e.stopPropagation(); p.node.setDataValue('del', true); });
+    this.eGui.addEventListener('click', function (e) { e.stopPropagation(); p.node.setDataValue('_del_click', true); });
   }
   getGui() { return this.eGui; }
   refresh() { return false; }
@@ -365,14 +365,14 @@ def grid_options(ws: Workspace, frame: pd.DataFrame, fields: list[str], view: st
         groups.append({"headerName": period_label(p) + flag, "children": [col(f) for f in fs],
                        "headerClass": "h-month" if view == "Monthly" else "h-week"})
 
-    hidden = [{"field": c, "hide": True} for c in frame.columns if c.startswith("_")]
+    hidden = [{"field": c, "hide": True} for c in frame.columns if c.startswith("_") and c != "_del"]
     return {
         "columnDefs": [{"field": "Line", "headerName": unit_label(ws.currency, 1000 if decimals == 0 else 1),
                         "pinned": "left", "width": 270, "minWidth": 200, "tooltipField": "Line",
                         "editable": JsCode(_LABEL_EDITABLE), "valueFormatter": JsCode(_LABEL_FMT),
                         "cellEditorSelector": JsCode(_LABEL_EDITOR),
                         "cellClass": JsCode(_LABEL_CLASS), "singleClickEdit": True}] + groups
-                      + [{"field": "del", "headerName": "", "pinned": "right", "width": 44, "maxWidth": 44,
+                      + [{"field": "_del", "colId": "del", "headerName": "", "pinned": "right", "width": 44, "maxWidth": 44,
                           "editable": False, "resizable": False, "cellRenderer": JsCode(_DEL_RENDER), "headerTooltip": "Delete row"}] + hidden,
         "defaultColDef": {"resizable": True, "sortable": False, "suppressMovable": True},
         "getRowClass": JsCode(_ROW_CLASS),
@@ -422,7 +422,7 @@ def render(ws: Workspace, view: str, pending: PendingEdits, read_only: bool, key
                     new_id = partner_line_id(ws.business_unit, direction, partner)
                     label_pending[new_id] = partner_marker(direction, partner)
                 continue
-            if row.get("_del") == "1" and "del" in returned.columns and _clicked(returned.at[line_id, "del"]):
+            if row.get("_del") == "1" and "_del_click" in returned.columns                     and _clicked(returned.at[line_id, "_del_click"]):
                 _stage_delete(ws, {ln.line_id: ln for ln in lines}, cells, str(line_id), new_pending, label_pending)
                 continue
             if row.get("_label_ed") == "1" and "Line" in returned.columns:
