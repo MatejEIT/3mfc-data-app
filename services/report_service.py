@@ -17,6 +17,10 @@ from services.reference_data import ReferenceData
 from services.repository import ForecastRepository
 
 CRITICAL, CHECK, INFO = "Critical", "Check", "Info"
+
+# Companies that are not expected to deliver a forecast (Excel mockup "Ohne Lieferung": V013; V014 has no
+# values in the client workbook). Matched on the 4-character company code. Change here when this changes.
+NO_DELIVERY_EXPECTED = frozenset({"V013", "V014"})
 _ORDER = {CRITICAL: 0, CHECK: 1, INFO: 2}
 
 
@@ -28,8 +32,9 @@ class CompanyRow:
     rate: Decimal | None
     revision: str
     revision_kind: str
-    status: str                        # Consolidated | No forecast | No FX rate | No values
+    status: str                        # Consolidated | Not expected | Missing | No FX rate | No values
     flows: CompanyFlows | None = None
+    expected: bool = True
 
 
 @dataclass
@@ -47,6 +52,17 @@ class Report:
     @property
     def consolidated(self) -> list[CompanyRow]:
         return [c for c in self.companies if c.status == "Consolidated"]
+
+    def rates_by_currency(self) -> list[dict]:
+        """One row per currency: rate used, companies using it, status (FX table of the mockup)."""
+        out: dict[str, dict] = {}
+        for c in self.companies:
+            r = out.setdefault(c.currency, {"Currency": c.currency, "Rate": c.rate, "Companies": [], "Used": False})
+            r["Companies"].append(c.business_unit)
+            r["Used"] = r["Used"] or c.status == "Consolidated"
+            if r["Rate"] is None:
+                r["Rate"] = c.rate
+        return sorted(out.values(), key=lambda r: (r["Currency"] != "EUR", r["Currency"]))
 
 
 class ReportService:
@@ -74,11 +90,17 @@ class ReportService:
                 ref_txt = self.ref.fx_reference(bu, snapshot)
                 rep.fx_reference = "" if ref_txt == "missing" else ref_txt
             st = states.get(bu)
+            expected = bu[:4] not in NO_DELIVERY_EXPECTED
             row = CompanyRow(bu, e["NAME_ENTITY"], cur, rate, f"R{st.head.revision_no}" if st else "",
-                             st.head.kind.value if st else "", "No forecast")
+                             st.head.kind.value if st else "", "Missing" if expected else "Not expected",
+                             expected=expected)
             rep.companies.append(row)
             if st is None:
-                rep.checks.append(_chk(INFO, bu, "Completeness", "No forecast in this snapshot – not consolidated"))
+                if expected:
+                    rep.checks.append(_chk(CRITICAL, bu, "Completeness",
+                                           "Forecast expected but missing in this snapshot – not consolidated"))
+                else:
+                    rep.checks.append(_chk(INFO, bu, "Completeness", "No forecast expected (no delivery)"))
                 continue
             if rate is None:
                 row.status = "No FX rate"
@@ -95,6 +117,9 @@ class ReportService:
                 continue
             row.status = "Consolidated"
             flows.append(cf)
+            if not any(v != 0 for key, wk in cf.weekly.items() for v in wk.values()):
+                rep.checks.append(_chk(CHECK, bu, "Completeness",
+                                       "No cash movements in the 3 months – only the opening balance is forecast"))
             neg = [(v, w) for w in weeks if (v := cf.closing.get(w.code_week_period)) is not None
                    and v < Decimal("-0.5")]
             if neg:

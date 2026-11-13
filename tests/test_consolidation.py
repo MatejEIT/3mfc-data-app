@@ -86,10 +86,27 @@ def test_report_consolidates_companies_with_rate_and_lists_the_rest(snap, repo, 
     rep = ReportService(repo, ref).build(snap)
     by_bu = {x.business_unit: x for x in rep.companies}
     assert by_bu[BU].status == "Consolidated" and by_bu[BU].rate == D("1.1")
-    assert by_bu["V001DE"].status == "No forecast" and by_bu["V016MX"].status == "No forecast"
+    assert by_bu["V001DE"].status == "Missing" and by_bu["V016MX"].status == "Missing"
     c = rep.conso
     assert c.monthly["opening"]["202610"] == (D(3131000) / D("1.1") / 1000)
     assert c.monthly["total_in"]["202610"] == D(200000) / D("1.1") / 1000
     assert rep.status == "OPEN" and any(ch["Topic"] == "Status" for ch in rep.checks)
     assert gateway.jobs - jobs <= 8                             # batched: not one job per company
-    assert not any(ch["Severity"] == CRITICAL for ch in rep.checks)
+    crit = {ch["Area"] for ch in rep.checks if ch["Severity"] == CRITICAL}
+    assert crit == {"V001DE", "V016MX"}                          # expected but missing
+
+
+def test_not_expected_companies_are_info_and_rates_grouped_by_currency(snap, repo, ref, gateway):
+    import pandas as pd
+    ents = gateway.sources[("fx", "DIM_3MFC_ENTITY")]
+    gateway.sources[("fx", "DIM_3MFC_ENTITY")] = pd.concat([ents, pd.DataFrame([{
+        "CODE_BUSINESS_UNIT": "V013DE", "CODE_ENTITY": "V013", "NAME_ENTITY": "Dormant", "COUNTRY": "DE",
+        "CODE_REGION": "WEE", "CODE_LOCAL_CURRENCY": "EUR"}])], ignore_index=True)
+    ref.invalidate()
+    rep = ReportService(repo, ref).build(snap)
+    v013 = next(x for x in rep.companies if x.business_unit == "V013DE")
+    assert v013.status == "Not expected" and not v013.expected
+    assert next(ch for ch in rep.checks if ch["Area"] == "V013DE")["Severity"] == "Info"
+    rates = {r["Currency"]: r for r in rep.rates_by_currency()}
+    assert rates["USD"]["Rate"] == D("1.1") and rates["USD"]["Used"] and rates["USD"]["Companies"] == [BU]
+    assert rates["EUR"]["Rate"] == D(1) and set(rates["EUR"]["Companies"]) == {"V001DE", "V013DE"}
