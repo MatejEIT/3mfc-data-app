@@ -226,10 +226,10 @@ def columns(cons: Consolidation) -> list[tuple[str, str, str, str]]:
 
 def conso_table(cons: Consolidation, factor: Decimal = Decimal(1), unit: str = "kEUR") -> str:
     cols = columns(cons)
-    head1 = f'<tr><th class="lbl" rowspan="2">{unit}</th>' + "".join(
+    head1 = f'<tr><th class="lbl">{unit}</th>' + "".join(
         f'<th class="mh" colspan="{sum(1 for x in cols if x[2] == p)}">{period_label(p)}</th>' for p in cons.periods
     ) + '<th class="mh t"></th></tr>'
-    head2 = "<tr>" + "".join(f'<th class="{t}">{U.E(lbl)}</th>' for _, lbl, _, t in cols) + "</tr>"
+    head2 = '<tr><th class="lbl"></th>' + "".join(f'<th class="{t}">{U.E(lbl)}</th>' for _, lbl, _, t in cols) + "</tr>"
     body = []
     for key, label, kind in CONSO_ROWS:
         if kind == "section":
