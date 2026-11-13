@@ -67,6 +67,13 @@ CSS = f"""
   transition:transform .18s ease, box-shadow .18s ease; animation:rp-rise .5s ease-out both; }}
 .rp-kpi:hover {{ transform:translateY(-2px); box-shadow:0 14px 32px -14px rgba(23,38,94,.35); }}
 .rp-kpi:before {{ content:""; position:absolute; left:0; top:0; right:0; height:3px; background:var(--acc,{T.PRIMARY}); }}
+.rp-kpi.dark {{ border:none; color:#fff;
+  background:radial-gradient(260px 120px at 100% 0%, rgba(30,144,255,.55), transparent 70%),
+             linear-gradient(135deg, #0B1640, {T.DARK_NAVY} 60%, #1A4FA8); box-shadow:0 16px 34px -18px rgba(23,38,94,.8); }}
+.rp-kpi.dark:before {{ background:linear-gradient(90deg,#4DA8FF,#A78BFA); }}
+.rp-kpi.dark .rp-kpi-h, .rp-kpi.dark .rp-kpi-f, .rp-kpi.dark .rp-kpi-v small {{ color:#C9D8F5; }}
+.rp-kpi.dark .rp-kpi-v {{ color:#fff; }}
+.rp-kpi.dark .rp-ico {{ background:rgba(255,255,255,.12); color:#9CC7FF; }}
 .rp-kpi-h {{ display:flex; align-items:center; gap:8px; color:{T.MUTED}; font-size:11px; letter-spacing:.08em;
   text-transform:uppercase; font-weight:650; }}
 .rp-ico {{ width:26px; height:26px; border-radius:8px; display:grid; place-items:center;
@@ -78,24 +85,36 @@ CSS = f"""
 .rp-delta {{ font-weight:700; padding:1px 7px; border-radius:999px; font-size:11px; }}
 .rp-up {{ color:#047857; background:#D1FAE5; }} .rp-down {{ color:#B91C1C; background:#FEE2E2; }}
 .rp-spark {{ position:absolute; right:10px; bottom:10px; opacity:.95; }}
+.rp-kpi:has(svg.rp-spark) .rp-kpi-f {{ padding-right:74px; }}
+.rp-kpi-f, .rp-delta {{ white-space:nowrap; }}
+.rp-kpi-f {{ overflow:hidden; text-overflow:ellipsis; }}
 .rp-gauge {{ height:6px; border-radius:99px; background:#EEF2F7; margin-top:9px; position:relative; overflow:hidden; }}
 .rp-gauge i {{ position:absolute; left:0; top:0; bottom:0; border-radius:99px; }}
 
 .rp-card {{ background:#fff; border:1px solid #E3EAF5; border-radius:18px; padding:16px 18px 10px;
   box-shadow:0 10px 30px -20px rgba(23,38,94,.35); animation:rp-rise .55s ease-out both; }}
 .rp-card-h {{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:2px; }}
-.rp-card-t {{ font-weight:700; font-size:15px; color:{T.TEXT}; }}
+.rp-card-t {{ font-weight:700; font-size:15px; color:{T.TEXT}; display:flex; align-items:center; gap:9px; }}
+.rp-badge {{ width:28px; height:28px; border-radius:9px; display:grid; place-items:center; color:#fff;
+  background:linear-gradient(135deg, #1E90FF, #1A4FA8 60%, #17265E); box-shadow:0 6px 14px -6px rgba(30,144,255,.8); }}
+.rp-foot {{ display:flex; justify-content:space-between; gap:12px; margin-top:22px; padding:12px 18px; border-radius:14px;
+  font-size:11.5px; color:#C9D8F5; letter-spacing:.02em;
+  background:radial-gradient(500px 90px at 90% -60%, rgba(30,144,255,.5), transparent 70%),
+             linear-gradient(120deg, #0B1640, {T.DARK_NAVY} 60%, #1A4FA8); }}
 .rp-card-s {{ color:{T.MUTED}; font-size:12px; }}
 
-/* pill tabs (Streamlit >= 1.5x renders tabs with react-aria: role=tablist / data-testid=stTab) */
-[role="tablist"] {{ gap:6px !important; background:#EEF3FB !important; padding:5px !important; border-radius:14px !important;
-  width:fit-content !important; border:1px solid #E1E8F4 !important; border-bottom:1px solid #E1E8F4 !important; }}
-[data-testid="stTab"] {{ height:34px !important; padding:0 16px !important; border-radius:10px !important;
-  background:transparent !important; color:{T.MUTED} !important; transition:background .15s ease, color .15s ease; }}
-[data-testid="stTab"]:hover {{ color:{T.DARK_NAVY} !important; background:rgba(255,255,255,.6) !important; }}
+/* pill tabs on a dark gradient ribbon (Streamlit >= 1.5x: react-aria role=tablist / data-testid=stTab) */
+[role="tablist"] {{ gap:6px !important; padding:6px !important; border-radius:16px !important; width:fit-content !important;
+  border:1px solid rgba(255,255,255,.08) !important;
+  background:radial-gradient(420px 120px at 85% -40%, rgba(30,144,255,.55), transparent 70%),
+             linear-gradient(120deg, #0B1640 0%, {T.DARK_NAVY} 55%, #1A4FA8 100%) !important;
+  box-shadow:0 12px 28px -16px rgba(23,38,94,.7) !important; }}
+[data-testid="stTab"] {{ height:34px !important; padding:0 16px !important; border-radius:11px !important;
+  background:transparent !important; color:#C9D8F5 !important; transition:background .15s ease, color .15s ease; }}
+[data-testid="stTab"]:hover {{ color:#fff !important; background:rgba(255,255,255,.10) !important; }}
 [data-testid="stTab"] p {{ font-weight:650 !important; font-size:13.5px !important; }}
 [data-testid="stTab"][aria-selected="true"] {{ background:#fff !important; color:{T.DARK_NAVY} !important;
-  box-shadow:0 2px 10px -3px rgba(23,38,94,.35) !important; }}
+  box-shadow:0 4px 14px -4px rgba(30,144,255,.65) !important; }}
 [role="tablist"] .react-aria-SelectionIndicator {{ display:none !important; }}
 
 /* tables */
@@ -105,7 +124,12 @@ CSS = f"""
 .rp-t thead th {{ position:sticky; top:0; z-index:2; background:#F6F9FE; color:{T.MUTED}; font-weight:650;
   font-size:11.5px; letter-spacing:.02em; }}
 .rp-t thead tr:nth-child(2) th {{ top:31px; }}
-.rp-t th.mh {{ text-align:center; color:{T.DARK_NAVY}; font-size:12px; border-bottom:2px solid {T.PRIMARY}; }}
+.rp-t thead tr:first-child th {{ background:linear-gradient(120deg, #0B1640, {T.DARK_NAVY} 60%, #1A4FA8); color:#E6EEFF; }}
+.rp-t thead tr:first-child th.lbl {{ background:#0B1640; color:#9CC7FF; letter-spacing:.12em; }}
+.rp-t th.mh {{ text-align:center; color:#fff !important; font-size:12.5px; letter-spacing:.02em;
+  border-bottom:2px solid #4DA8FF; border-left:1px solid rgba(255,255,255,.08); }}
+.rp-t thead tr:nth-child(2) th {{ background:#EEF5FF; color:{T.DARK_NAVY}; }}
+.rp-t thead tr:nth-child(2) th.t {{ background:#DCEBFF; }}
 .rp-t td.lbl, .rp-t th.lbl {{ position:sticky; left:0; z-index:1; background:#fff; text-align:left; min-width:250px; }}
 .rp-t thead th.lbl {{ z-index:3; background:#F6F9FE; }}
 .rp-t td.m, .rp-t th.m {{ background:#F4F7FC; font-weight:650; }}
@@ -118,6 +142,12 @@ CSS = f"""
 .rp-t tr.total td {{ font-weight:750; background:linear-gradient(90deg,#EEF4FF,#F7FAFF); border-top:1px solid #D6E2F5; }}
 .rp-t tr.total td.lbl {{ background:#EEF4FF; }}
 .rp-t tr.memo td {{ color:{T.MUTED}; font-style:italic; }}
+.rp-t tr.grand td {{ font-weight:800; color:#fff !important; border:none;
+  background:linear-gradient(120deg, #11225C, #1A4FA8) !important; }}
+.rp-t tr.grand td.lbl {{ background:#11225C !important; }}
+.rp-t tr.grand td.neg {{ color:#FFB4B4 !important; }}
+.rp-t tr.grand td.z {{ color:#7C93C3 !important; }}
+.rp-t tr.grand:hover td {{ background:linear-gradient(120deg, #11225C, #1E5BC6) !important; }}
 .rp-t tr.check td {{ font-weight:650; }}
 .rp-t td.neg {{ color:{T.NEGATIVE}; }}
 .rp-t td.z {{ color:#C3CBD8; }}
@@ -157,6 +187,8 @@ ICONS = {
     "flag": '<path d="M5 21V4m0 0h11l-2 4 2 4H5"/>',
     "low": '<path d="M4 7l6 6 4-4 6 6"/><path d="M15 15h5v-5"/>',
     "link": '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+    "bars": '<path d="M5 20V10M10 20V4M15 20v-7M20 20v-11"/>',
+    "wave": '<path d="M3 15c2.5 0 2.5-6 5-6s2.5 8 5 8 2.5-10 5-10 2 4 3 4"/>',
     "grid": '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/>'
             '<rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
 }
@@ -205,8 +237,8 @@ def tag(text: str, kind: str = "") -> str:
 
 
 def kpi(label: str, value: str, foot: str, ico: str, accent: str = T.PRIMARY, unit: str = "kEUR",
-        extra: str = "", delay: float = 0) -> str:
-    return (f'<div class="rp-kpi" style="--acc:{accent};animation-delay:{delay:.2f}s">'
+        extra: str = "", delay: float = 0, dark: bool = False) -> str:
+    return (f'<div class="rp-kpi{" dark" if dark else ""}" style="--acc:{accent};animation-delay:{delay:.2f}s">'
             f'<div class="rp-kpi-h"><span class="rp-ico">{icon(ico)}</span>{E(label)}</div>'
             f'<div class="rp-kpi-v">{E(value)}<small>{E(unit)}</small></div>'
             f'<div class="rp-kpi-f">{foot}</div>{extra}</div>')
@@ -216,8 +248,13 @@ def gauge(share: float, color: str) -> str:
     return f'<div class="rp-gauge"><i style="width:{max(3, min(100, share * 100)):.0f}%;background:{color}"></i></div>'
 
 
-def card_head(title: str, sub: str = "") -> str:
-    return (f'<div class="rp-card-h"><div class="rp-card-t">{E(title)}</div>'
+def footer(left: str, right: str) -> str:
+    return f'<div class="rp-foot"><span>{E(left)}</span><span>{E(right)}</span></div>'
+
+
+def card_head(title: str, sub: str = "", ico: str = "") -> str:
+    badge = f'<span class="rp-badge">{icon(ico)}</span>' if ico else ""
+    return (f'<div class="rp-card-h"><div class="rp-card-t">{badge}{E(title)}</div>'
             f'<div class="rp-card-s">{E(sub)}</div></div>')
 
 

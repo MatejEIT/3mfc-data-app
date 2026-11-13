@@ -30,8 +30,10 @@ except AccessDenied as exc:
 
 st.markdown(U.CSS, unsafe_allow_html=True)
 st.markdown(f"""<style>
-.st-key-rp_c1, .st-key-rp_c2 {{ background:#fff; border:1px solid #E3EAF5; border-radius:18px; padding:14px 16px 4px;
-  box-shadow:0 10px 30px -20px rgba(23,38,94,.35); }}
+.st-key-rp_c1, .st-key-rp_c2 {{ position:relative; overflow:hidden; background:#fff; border:1px solid #E3EAF5;
+  border-radius:18px; padding:16px 16px 4px; box-shadow:0 10px 30px -20px rgba(23,38,94,.35); }}
+.st-key-rp_c1:before, .st-key-rp_c2:before {{ content:""; position:absolute; left:0; right:0; top:0; height:3px;
+  background:linear-gradient(90deg, #1E90FF, #1A4FA8 55%, #A78BFA); }}
 .st-key-rp_ctl {{ margin-bottom:6px; }}
 </style>""", unsafe_allow_html=True)
 
@@ -139,9 +141,9 @@ cards = [
           f"Σ companies · {c.weeks[0].start:%d}–{c.weeks[0].end:%d %b}", "wallet", T.PRIMARY, delay=0),
     U.kpi("Net cash movement", U.k(net, False), f"{delta} 3 months · excl. IC", "flow",
           T.POSITIVE if net >= 0 else T.NEGATIVE,
-          extra=U.sparkline(cum, color=T.POSITIVE if net >= 0 else T.NEGATIVE), delay=.05),
-    U.kpi(f"Closing · {period_label(c.periods[-1], True)}", U.k(closing, False), "group, end of horizon", "flag",
-          T.DARK_NAVY, extra=U.sparkline(closing_series, color=T.DARK_NAVY), delay=.1),
+          extra=U.sparkline(cum, 68, 26, color="#7CC0FF"), delay=.05, dark=True),
+    U.kpi(f"Closing · {period_label(c.periods[-1], True)}", U.k(closing, False), "group · end of horizon", "flag",
+          T.DARK_NAVY, extra=U.sparkline(closing_series, 68, 26, color=T.DARK_NAVY), delay=.1),
     U.kpi("Lowest weekly cash", U.k(low, False), f"{low_w.start:%d}–{low_w.end:%d %b %Y}", "low",
           T.NEGATIVE if low < 0 else "#0EA5E9", delay=.15),
     U.kpi("IC difference", U.k(ic_total, False), f"worst month {U.k(ic_worst, False)} · limit ±{IC_TOLERANCE_KEUR:.0f}",
@@ -159,7 +161,8 @@ HOVER = dict(bgcolor="#0B1640", bordercolor="#0B1640", font=dict(color="#fff", s
 g1, g2 = st.columns([1, 1.15])
 with g1.container(key="rp_c1"):
     steps = bridge(c)
-    st.markdown(U.card_head("Cash bridge", "3 months · kEUR"), unsafe_allow_html=True)
+    st.markdown(U.card_head("Cash bridge", "3 months · kEUR · * month transitions = IC mismatches", "bars"),
+                unsafe_allow_html=True)
     fig = go.Figure(go.Waterfall(
         x=[s.replace(" & ", " &<br>").replace("Month transitions*", "Month<br>transitions*") for s, _ in steps],
         y=[float(v) for _, v in steps],
@@ -173,13 +176,10 @@ with g1.container(key="rp_c1"):
                       yaxis=dict(gridcolor="#EEF2F7", zeroline=False, tickformat=",.0f", showline=False),
                       xaxis=dict(showline=False, tickfont=dict(color=T.MUTED, size=11), tickangle=0))
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-    if any(s.startswith("Month transitions") for s, _ in steps):
-        st.caption("\\* Month transitions: each month restarts from the companies' opening balances "
-                   "(difference = IC mismatches).")
 
 with g2.container(key="rp_c2"):
-    st.markdown(U.card_head("Weekly group cash balance", "closing per week · kEUR"), unsafe_allow_html=True)
-    xs = [f"{w.start:%d}–{w.end:%d} {w.end:%b}" for w in c.weeks]
+    st.markdown(U.card_head("Weekly group cash balance", "closing per week · kEUR", "wave"), unsafe_allow_html=True)
+    xs = [f"{w.start:%d}–{w.end:%d}<br>{w.end:%b}" for w in c.weeks]
     i_low = closing_series.index(min(closing_series))
     line = go.Figure()
     lo_, hi_ = min(closing_series), max(closing_series)
@@ -240,7 +240,8 @@ def conso_table(cons: Consolidation, factor: Decimal = Decimal(1), unit: str = "
             v = cons.value(key, col)
             v = None if v is None else v * factor
             cells.append(U.num_cell(v, t))
-        body.append(f'<tr class="{kind}"><td class="lbl">{U.E(label)}</td>{"".join(cells)}</tr>')
+        cls = "grand" if key == "closing" else kind
+        body.append(f'<tr class="{cls}"><td class="lbl">{U.E(label)}</td>{"".join(cells)}</tr>')
     return U.table([head1, head2], body)
 
 
@@ -399,3 +400,6 @@ with t_det:
 with t_ass:
     st.markdown('<div class="rp-card"><ol class="rp-steps">' + "".join(f"<li>{U.E(a)}</li>" for a in ASSUMPTIONS)
                 + "</ol></div>", unsafe_allow_html=True)
+
+st.markdown(U.footer(f"Source: Keboola · app revisions of snapshot {rep.snapshot} · FX {rep.fx_reference}",
+                     f"{n_ok} companies · kEUR · IC eliminated · logic of Excel “FC CONSO”"), unsafe_allow_html=True)
