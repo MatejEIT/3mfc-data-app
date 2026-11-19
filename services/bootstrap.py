@@ -41,6 +41,9 @@ def get_context() -> AppContext:
                             settings.app_bucket, settings.staging_db)
     repo = ForecastRepository(gw)
     ref = ReferenceData(gw, settings)
+    if settings.backend != "memory":
+        from services.migrations import run_startup_migrations
+        run_startup_migrations(repo, ref)
     return AppContext(settings, gw, repo, ref, ForecastService(repo, ref), SnapshotService(repo, ref))
 
 

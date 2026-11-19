@@ -8,10 +8,13 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from components import report_ui as U
 from components import theme as T
+from components.forecast_grid import period_label
 from domain.calendar import next_period, snapshot_periods
 from services.auth_service import AccessDenied
 from services.bootstrap import get_context, require_user
+from services.report_service import ReportService
 
 ctx = get_context()
 user = require_user()
@@ -86,6 +89,69 @@ with st.container(key="ctl_panel"):
                         unsafe_allow_html=True)
         if s2.button("Reopen" if is_final else "Mark FINAL", width="stretch", type="secondary" if is_final else "primary"):
             status_dialog()
+
+
+# =========================================================================== 1b. cash overview
+if view is not None:
+    with st.container(key="cash_overview"):
+        rkey = f"report::{snap}"
+        if rkey not in st.session_state:
+            with st.spinner(f"Consolidating snapshot {snap}…"):
+                st.session_state[rkey] = ReportService(ctx.repo, ctx.ref).build(snap)
+        rep = st.session_state[rkey]
+        cons = rep.conso
+        T.block_title("Cash overview",
+                      f"Group in kEUR, intercompany eliminated · {len(rep.consolidated)} companies with values and FX "
+                      f"{rep.fx_reference} · details in HQ report")
+        if cons is None:
+            st.info("Nothing to consolidate yet (no forecast values or FX rates).")
+        else:
+            st.markdown(U.CSS, unsafe_allow_html=True)
+            wks = [w.code_week_period for w in cons.weeks]
+            g_open, g_close = cons.monthly["opening"]["TOTAL"], cons.monthly["closing"]["TOTAL"]
+            g_net = g_close - g_open
+            series = [float(cons.weekly["closing"][w]) for w in wks]
+            low_w = min(cons.weeks, key=lambda w: cons.weekly["closing"][w.code_week_period])
+            low = cons.weekly["closing"][low_w.code_week_period]
+            up = g_net >= 0
+            st.markdown('<div class="rp-kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))">' + "".join([
+                U.kpi(f"Group opening · {period_label(cons.periods[0], True)}", U.k(g_open, False),
+                      "Σ companies", "wallet", T.PRIMARY),
+                U.kpi(f"Group closing · {period_label(cons.periods[-1], True)}", U.k(g_close, False),
+                      "end of horizon", "flag", T.DARK_NAVY, extra=U.sparkline(series, 68, 26, color="#7CC0FF"),
+                      dark=True),
+                U.kpi("Change over 3 months", ("+" if up else "−") + U.k(abs(g_net), False),
+                      f'<span class="rp-delta {"rp-up" if up else "rp-down"}">{"▲" if up else "▼"} '
+                      f'{abs(g_net / g_open * 100):.0f} %</span> vs opening' if g_open else "vs opening",
+                      "flow", T.POSITIVE if up else T.NEGATIVE),
+                U.kpi("Lowest weekly cash", U.k(low, False), f"{low_w.start:%d}–{low_w.end:%d %b %Y}", "low",
+                      T.NEGATIVE if low < 0 else "#0EA5E9"),
+            ]) + "</div>", unsafe_allow_html=True)
+
+            head = ('<tr><th class="lbl">Company</th><th>Trend (weekly closing)</th>'
+                    f'<th>Opening {period_label(cons.periods[0], True)}</th>'
+                    f'<th>Closing {period_label(cons.periods[-1], True)}</th><th>Change</th><th>Lowest week</th></tr>')
+            body = []
+            rows = sorted(rep.consolidated, key=lambda x: -(x.flows.closing.get(wks[-1]) or 0))
+            for x in rows:
+                f = x.flows
+                ser = [float(f.closing[w] or 0) for w in wks]
+                o, cl = f.opening.get(wks[0]), f.closing.get(wks[-1])
+                chg = (cl - o) if (o is not None and cl is not None) else None
+                lowest = min((v for v in f.closing.values() if v is not None), default=None)
+                arrow = "" if chg is None else (
+                    f'<span style="color:{T.POSITIVE if chg >= 0 else T.NEGATIVE}">{"▲" if chg >= 0 else "▼"}</span> ')
+                body.append(
+                    f'<tr><td class="lbl"><b>{U.E(x.business_unit)}</b> <span style="color:{T.MUTED}">{U.E(x.name)}'
+                    f'</span></td><td>{U.sparkline(ser, 120, 24, T.NEGATIVE if min(ser) < 0 else T.PRIMARY, "")}</td>'
+                    f'{U.num_cell(o)}{U.num_cell(cl)}'
+                    f'<td class="{"neg" if chg is not None and chg < 0 else ""}">{arrow}{U.k(chg) if chg is not None else "–"}</td>'
+                    f'{U.num_cell(lowest)}</tr>')
+            with st.expander(f"Cash balance per company · kEUR · {len(rows)} companies", expanded=True):
+                st.markdown(U.table([head], body), unsafe_allow_html=True)
+                missing = [x.business_unit for x in rep.companies if x.expected and x not in rep.consolidated]
+                if missing:
+                    st.caption(f"Not included (no values or no FX rate): {', '.join(missing)}")
 
 # =========================================================================== 2. work area
 if view is not None:
