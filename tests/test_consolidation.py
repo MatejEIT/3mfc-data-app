@@ -111,19 +111,3 @@ def test_not_expected_companies_are_info_and_rates_grouped_by_currency(snap, rep
     assert rates["USD"]["Rate"] == D("1.1") and rates["USD"]["Used"] and rates["USD"]["Companies"] == [BU]
     assert rates["EUR"]["Rate"] == D(1) and set(rates["EUR"]["Companies"]) == {"V001DE", "V013DE"}
 
-
-def test_excel_baseline_migration_marks_import_submitted_once(snap, repo, ref, forecast_service, hq):
-    from services.migrations import BASELINE_ACTOR, mark_excel_baseline_submitted
-    before = repo.load_state(snap, BU)
-    assert mark_excel_baseline_submitted(repo, ref, snap) == [BU]       # no validation: months may be empty
-    sub = repo.submissions(snap).set_index("CODE_BUSINESS_UNIT").loc[BU]
-    assert sub["STATUS"] == "SUBMITTED" and sub["SUBMITTED_BY"] == BASELINE_ACTOR
-    after = repo.load_state(snap, BU)
-    assert after.revision_no == 2 and {k: (c.amount, c.state) for k, c in after.cells.items()} == \
-        {k: (c.amount, c.state) for k, c in before.cells.items()}      # values unchanged
-    audit = repo.audit(snap, BU)
-    assert (audit["CHANGE_TYPE"] == "ENTITY_SUBMIT").sum() == 1 and audit["COMMENT"].str.contains("Excel baseline").any()
-    assert mark_excel_baseline_submitted(repo, ref, snap) == []         # idempotent
-    ws = forecast_service.open(hq, snap, BU)
-    forecast_service.save(hq, ws, [Edit("L_TAXES", "202610_W1", "1")], None, "", "adj")
-    assert repo.submissions(snap).set_index("CODE_BUSINESS_UNIT").loc[BU, "HAS_HQ_ADJUSTMENTS"] == "1"

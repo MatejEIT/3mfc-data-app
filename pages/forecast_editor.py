@@ -44,6 +44,9 @@ panel = st.container(key="ctl_panel")
 with panel:
     T.block_title("Select forecast", "Choose the company, the forecast snapshot and the month you want to work on.")
     c1, c2, c3 = st.columns([2.6, 1.1, 2.6])
+    goto = st.session_state.pop("goto_forecast", None)      # set by HQ Workspace (click on a company)
+    if goto and goto[0] in labels and goto[1] in snapshots:
+        st.session_state["sel_bu"], st.session_state["sel_snapshot"] = goto
     bu = c1.selectbox("Company", list(labels), format_func=labels.get, key="sel_bu")
     snapshot = c2.selectbox("Snapshot", snapshots, key="sel_snapshot")
     months = snapshot_periods(snapshot)

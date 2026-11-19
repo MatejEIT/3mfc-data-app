@@ -147,7 +147,7 @@ if view is not None:
                     f'{U.num_cell(o)}{U.num_cell(cl)}'
                     f'<td class="{"neg" if chg is not None and chg < 0 else ""}">{arrow}{U.k(chg) if chg is not None else "–"}</td>'
                     f'{U.num_cell(lowest)}</tr>')
-            with st.expander(f"Cash balance per company · kEUR · {len(rows)} companies", expanded=True):
+            with st.expander(f"Cash balance per company · kEUR · {len(rows)} companies", expanded=False):
                 st.markdown(U.table([head], body), unsafe_allow_html=True)
                 missing = [x.business_unit for x in rep.companies if x.expected and x not in rep.consolidated]
                 if missing:
@@ -157,15 +157,24 @@ if view is not None:
 if view is not None:
     with st.container(key="work_area"):
         T.block_title(f"Companies · snapshot {snap}",
-                      "To change a company's numbers, open it in Forecast Editor – every HQ change is recorded.")
+                      "Click a company to open it in Forecast Editor and adjust it – every HQ change is recorded.")
         table = view.sort_values(["Status", "CODE_BUSINESS_UNIT"])[
             ["CODE_BUSINESS_UNIT", "NAME_ENTITY", "CODE_REGION", "Status", "SUBMITTED_BY", "SUBMITTED_AT_UTC",
              "HQ adjusted", "UPDATED_AT_UTC"]].rename(columns={
                  "CODE_BUSINESS_UNIT": "Company", "NAME_ENTITY": "Name", "CODE_REGION": "Region",
                  "SUBMITTED_BY": "Submitted by", "SUBMITTED_AT_UTC": "Submitted at (UTC)",
-                 "UPDATED_AT_UTC": "Last change (UTC)"})
-        st.dataframe(table, hide_index=True, width="stretch",
-                     column_config={"HQ adjusted": st.column_config.CheckboxColumn()})
+                 "UPDATED_AT_UTC": "Last change (UTC)"}).reset_index(drop=True)
+        event = st.dataframe(table, hide_index=True, width="stretch", key=f"ws_companies::{snap}",
+                             on_select="rerun", selection_mode="single-row",
+                             column_config={"HQ adjusted": st.column_config.CheckboxColumn()})
+        picked = event.selection.rows if event else []
+        if picked:
+            row_ = table.iloc[picked[0]]
+            if row_["Status"] == "No forecast":
+                st.info(f"{row_['Company']} has no forecast in snapshot {snap} – nothing to open.")
+            else:
+                st.session_state["goto_forecast"] = (row_["Company"], snap)
+                st.switch_page("pages/forecast_editor.py")
 
 # =========================================================================== 3. details (collapsed)
 with st.container(key="details"):
