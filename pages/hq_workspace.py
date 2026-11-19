@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from components import theme as T
-from domain.calendar import next_period
+from domain.calendar import next_period, snapshot_periods
 from services.auth_service import AccessDenied
 from services.bootstrap import get_context, require_user
 
@@ -35,6 +35,8 @@ with st.container(key="ctl_panel"):
     else:
         c1, c2 = st.columns([1.2, 5])
         snap = c1.selectbox("Snapshot", snapshots, key="hq_snap")
+        months = [pd.Timestamp(f"{p[:4]}-{p[4:]}-01").strftime("%b %Y") for p in snapshot_periods(snap)]
+        c1.caption(f"Forecast horizon: **{months[0]} – {months[-1]}**")
         subs = ctx.repo.submissions(snap)
         view = entities[["CODE_BUSINESS_UNIT", "NAME_ENTITY", "CODE_REGION", "CODE_LOCAL_CURRENCY"]].merge(
             subs, on="CODE_BUSINESS_UNIT", how="left").fillna("")
