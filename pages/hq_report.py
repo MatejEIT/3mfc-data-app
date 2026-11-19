@@ -178,28 +178,32 @@ with g1.container(key="rp_c1"):
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 with g2.container(key="rp_c2"):
-    st.markdown(U.card_head("Weekly group cash balance", "closing per week · kEUR", "wave"), unsafe_allow_html=True)
-    xs = [f"{w.start:%d}–{w.end:%d}<br>{w.end:%b}" for w in c.weeks]
-    i_low = closing_series.index(min(closing_series))
+    st.markdown(U.card_head("Weekly group cash balance", "opening + closing per week · kEUR", "wave"),
+                unsafe_allow_html=True)
+    # first point = group opening balance (start of week 1), then the closing balance of every week
+    xs = [f"Opening<br>{c.weeks[0].start:%d %b}"] + [f"{w.start:%d}–{w.end:%d}<br>{w.end:%b}" for w in c.weeks]
+    ys = [float(opening)] + closing_series
+    i_low = 1 + closing_series.index(min(closing_series))
     line = go.Figure()
-    lo_, hi_ = min(closing_series), max(closing_series)
+    lo_, hi_ = min(ys), max(ys)
     pad = max((hi_ - lo_) * 0.25, abs(hi_) * 0.02, 1.0)
     y0, y1 = (min(lo_ - pad, 0) if lo_ < 0 else lo_ - pad), hi_ + pad * 1.8      # room for the labels
     line.add_trace(go.Scatter(x=xs, y=[y0] * len(xs), mode="lines", line=dict(width=0), hoverinfo="skip"))
-    line.add_trace(go.Scatter(x=xs, y=closing_series, mode="lines", line=dict(width=0), fill="tonexty",
+    line.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(width=0), fill="tonexty",
                               fillcolor="rgba(30,144,255,0.10)", hoverinfo="skip"))
     line.add_trace(go.Scatter(
-        x=xs, y=closing_series, mode="lines+markers", line=dict(color=T.PRIMARY, width=2.5, shape="linear",
-                                                                  smoothing=.6),
-        marker=dict(size=8, color=[T.NEGATIVE if v < 0 else T.PRIMARY for v in closing_series],
+        x=xs, y=ys, mode="lines+markers", line=dict(color=T.PRIMARY, width=2.5, shape="linear"),
+        marker=dict(size=[10] + [8] * len(closing_series),
+                    color=[T.DARK_NAVY] + [T.NEGATIVE if v < 0 else T.PRIMARY for v in closing_series],
                     line=dict(color="#fff", width=2)),
-        hovertemplate="%{x}<br><b>%{y:,.0f} kEUR</b><extra></extra>"))
-    for i, txt in {0: "start", len(xs) - 1: "end", i_low: "lowest"}.items():
-        line.add_annotation(x=xs[i], y=closing_series[i], text=f"<b>{U.k(Decimal(str(closing_series[i])), False)}</b>"
+        customdata=["opening balance"] + ["closing balance"] * len(closing_series),
+        hovertemplate="%{x}<br><b>%{y:,.0f} kEUR</b> · %{customdata}<extra></extra>"))
+    for i, txt in {0: "opening", len(xs) - 1: "end", i_low: "lowest"}.items():
+        line.add_annotation(x=xs[i], y=ys[i], text=f"<b>{U.k(Decimal(str(ys[i])), False)}</b>"
                             f"<br><span style='color:{T.MUTED}'>{txt}</span>", showarrow=False, yshift=22,
                             font=dict(size=11, color=T.TEXT), bgcolor="rgba(255,255,255,.85)")
-    for p in c.periods[1:]:                                     # month separators
-        first = next(i for i, w in enumerate(c.weeks) if w.code_period_value == p)
+    for p in c.periods[1:]:                                     # month separators (+1: the opening point)
+        first = 1 + next(i for i, w in enumerate(c.weeks) if w.code_period_value == p)
         line.add_vline(x=first - 0.5, line=dict(color="#E2E8F0", width=1, dash="dot"))
     line.update_layout(height=300, margin=dict(l=4, r=4, t=18, b=4), plot_bgcolor="rgba(0,0,0,0)",
                        paper_bgcolor="rgba(0,0,0,0)", font=FONT, hoverlabel=HOVER, showlegend=False,
