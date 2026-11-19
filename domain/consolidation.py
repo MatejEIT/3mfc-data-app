@@ -23,6 +23,11 @@ IC_TOLERANCE_KEUR = Decimal(10)
 
 IC_IN_ROWS = {64, 65}                      # OTHER_RECEIPTS_DETAIL rows that are intercompany
 OTHER_IN_METRIC = "OTHER_RECEIPTS_DETAIL"
+IC_IN_GMBH_ROW = 64                        # "IC (VIDE-GMBH)" receipt; row 65 = "IC (other VI-group)"
+IC_OUT_GMBH_METRIC = "INTERCOMPANY_GMBH_OUTFLOW"     # row 88
+IC_OUT_OTHER_METRIC = "INTERCOMPANY_OTHER_OUTFLOW"   # row 89
+GMBH_BU = "V001DE"                         # VIDE GmbH - the counterparty of rows 64 / 88
+GMBH, OTHER = "GMBH", "OTHER"              # IC counterparty buckets (else a partner CODE_BUSINESS_UNIT)
 
 # (key, label, kind) - kind: section | line | sum | total | memo | check
 CONSO_ROWS: list[tuple[str, str, str]] = [
@@ -82,6 +87,8 @@ class CompanyFlows:
     closing: dict[str, Decimal | None]             # week -> company closing kEUR (incl. IC)
     month_closing: dict[str, Decimal | None]       # period -> company closing kEUR
     has_values: bool = True
+    # IC by (direction IN/OUT, counterparty GMBH / partner BU / OTHER) -> week -> kEUR
+    ic: dict[tuple[str, str], dict[str, Decimal]] = field(default_factory=dict)
 
 
 def company_flows(bu: str, lines: list[Line], weeks: list[WeekPeriod], result: ForecastResult,
@@ -91,6 +98,20 @@ def company_flows(bu: str, lines: list[Line], weeks: list[WeekPeriod], result: F
     ic_in_lines = [ln.line_id for ln in lines if ln.metric_code == OTHER_IN_METRIC and ln.source_row in IC_IN_ROWS]
     other_in_lines = [ln.line_id for ln in lines if ln.metric_code == OTHER_IN_METRIC
                       and ln.source_row not in IC_IN_ROWS]
+    ic_lines: dict[tuple[str, str], list[str]] = {}
+    for ln in lines:
+        partner = getattr(ln, "ic_partner", "") or ""
+        if ln.metric_code == OTHER_IN_METRIC and ln.source_row in IC_IN_ROWS:
+            key = ("IN", GMBH if ln.source_row == IC_IN_GMBH_ROW else (partner or OTHER))
+        elif ln.metric_code == IC_OUT_GMBH_METRIC:
+            key = ("OUT", GMBH)
+        elif ln.metric_code == IC_OUT_OTHER_METRIC:
+            key = ("OUT", partner or OTHER)
+        else:
+            continue
+        ic_lines.setdefault(key, []).append(ln.line_id)
+    ic = {key: {w.code_week_period: sum((_v(result.line_weekly.get((lid, w.code_week_period))) for lid in ids),
+                                        ZERO) / k for w in weeks} for key, ids in ic_lines.items()}
     any_value = False
     for w in weeks:
         wc = w.code_week_period
@@ -109,7 +130,7 @@ def company_flows(bu: str, lines: list[Line], weeks: list[WeekPeriod], result: F
     months = sorted({w.code_period_value for w in weeks})
     month_closing = {p: conv(result.metric_monthly.get(("CLOSING_CASH_BALANCE", p))) for p in months}
     any_value = any_value or any(v not in (None, ZERO) for v in opening.values())
-    return CompanyFlows(bu, rate, weekly, opening, closing, month_closing, any_value)
+    return CompanyFlows(bu, rate, weekly, opening, closing, month_closing, any_value, ic)
 
 
 @dataclass
@@ -181,3 +202,58 @@ def bridge(c: Consolidation) -> list[tuple[str, Decimal]]:
         steps.append(("Month transitions*", residual))
     steps.append(("Closing", closing))
     return steps
+
+
+# ------------------------------------------------------------------ IC reconciliation
+IC_FLOWS = [("to_gmbh", "Subsidiaries → VIDE GmbH"), ("from_gmbh", "VIDE GmbH → subsidiaries"),
+            ("between", "Between subsidiaries (other VI-group)")]
+
+
+def _ic_sum(x: CompanyFlows, direction: str, cps: set[str] | None, wcs: list[str]) -> Decimal:
+    """Sum of a company's IC in one direction; cps = counterparties (None = all)."""
+    return sum((sum(v.get(w, ZERO) for w in wcs) for (d, cp), v in x.ic.items()
+                if d == direction and (cps is None or cp in cps)), ZERO)
+
+
+def ic_flow_parts(x: CompanyFlows, flow: str, wcs: list[str], gmbh_bu: str = GMBH_BU) -> tuple[Decimal, Decimal]:
+    """(received, paid) of one company in one IC flow. Received − paid summed over all companies and flows
+    = group IC in − IC out (the 'Check (= 0)' line), so the three flows explain the whole difference."""
+    is_g = x.business_unit == gmbh_bu
+    if flow == "to_gmbh":
+        return (_ic_sum(x, "IN", None, wcs) if is_g else ZERO), (ZERO if is_g else _ic_sum(x, "OUT", {GMBH}, wcs))
+    if flow == "from_gmbh":
+        return (ZERO if is_g else _ic_sum(x, "IN", {GMBH}, wcs)), (_ic_sum(x, "OUT", None, wcs) if is_g else ZERO)
+    if is_g:                                                      # "between": subsidiaries only
+        return ZERO, ZERO
+    rec = _ic_sum(x, "IN", None, wcs) - _ic_sum(x, "IN", {GMBH}, wcs)
+    paid = _ic_sum(x, "OUT", None, wcs) - _ic_sum(x, "OUT", {GMBH}, wcs)
+    return rec, paid
+
+
+def ic_reconciliation(c: Consolidation, gmbh_bu: str = GMBH_BU) -> list[dict]:
+    """One row per IC flow: received / paid / difference per period and TOTAL (kEUR)."""
+    cols = {p: [w.code_week_period for w in c.weeks if w.code_period_value == p] for p in c.periods}
+    cols["TOTAL"] = [w.code_week_period for w in c.weeks]
+    rows = []
+    for flow, label in IC_FLOWS:
+        row = {"flow": flow, "label": label, "received": {}, "paid": {}, "diff": {}}
+        for col, wcs in cols.items():
+            rec = sum((ic_flow_parts(x, flow, wcs, gmbh_bu)[0] for x in c.companies), ZERO)
+            paid = sum((ic_flow_parts(x, flow, wcs, gmbh_bu)[1] for x in c.companies), ZERO)
+            row["received"][col], row["paid"][col], row["diff"][col] = rec, paid, rec - paid
+        rows.append(row)
+    return rows
+
+
+def ic_pairs(c: Consolidation, wcs: list[str]) -> list[dict]:
+    """Named partner pairs (rows 'IC from / to <partner>'): what A says it pays B vs what B says it receives."""
+    by_bu = {x.business_unit: x for x in c.companies}
+    out = []
+    keys = {((x.business_unit, cp) if d == "OUT" else (cp, x.business_unit))
+            for x in c.companies for (d, cp) in x.ic if cp not in (GMBH, OTHER)}
+    for a, b in sorted(keys):
+        paid = _ic_sum(by_bu[a], "OUT", {b}, wcs) if a in by_bu else ZERO
+        received = _ic_sum(by_bu[b], "IN", {a}, wcs) if b in by_bu else ZERO
+        if paid or received:
+            out.append({"payer": a, "receiver": b, "paid": paid, "received": received, "diff": received - paid})
+    return out

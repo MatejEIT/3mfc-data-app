@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from domain.calc import calculate, ordered_weeks
-from domain.consolidation import bridge, company_flows, consolidate
+from domain.consolidation import bridge, company_flows, consolidate, ic_pairs, ic_reconciliation
 from domain.validation import Edit
 from services.repository import SnapshotFinal
 from services.report_service import CRITICAL, ReportService
@@ -47,6 +47,29 @@ def test_unbalanced_ic_shows_up_as_month_transition():
     assert c.monthly["closing"]["202610"] == D(1)               # group ignores IC within the month
     assert c.weekly["opening"]["202611_W1"] == D("0.7")         # ...and re-bases on the company opening
     assert dict(bridge(c))["Month transitions*"] == D("-0.3")
+
+
+def test_ic_reconciliation_splits_the_difference_by_flow_and_pairs():
+    import domain.consolidation as C
+    g = _flows("V001DE", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                          ("L_IC_OTHER_IN", "202610_W1"): 300,                 # GmbH receives 300 from subsidiaries
+                          ("L_INTERCOMPANY_OTHER_OUTFLOW", "202610_W2"): 50}, 1)   # GmbH pays 50 to subsidiaries
+    a = _flows("A", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                     ("L_INTERCOMPANY_GMBH_OUTFLOW", "202610_W1"): 200,          # A says it pays GmbH 200
+                     ("L_INTERCOMPANY_OTHER_OUTFLOW", "202610_W1"): 40}, 1)     # A pays B 40 (unspecified)
+    b = _flows("B", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                     ("L_IC_OTHER_IN", "202610_W1"): 30}, 1)                     # B receives 30
+    c = consolidate([g, a, b], WEEKS)
+    rec = {r["flow"]: r for r in ic_reconciliation(c)}
+    assert rec["to_gmbh"]["diff"]["TOTAL"] == D("0.1")         # GmbH 300 received vs 200 paid by subsidiaries
+    assert rec["from_gmbh"]["diff"]["TOTAL"] == D("-0.05")     # GmbH paid 50, nobody booked it as received
+    assert rec["between"]["diff"]["TOTAL"] == D("-0.01")       # 30 received vs 40 paid
+    assert sum(r["diff"]["TOTAL"] for r in rec.values()) == c.monthly["ic_diff"]["TOTAL"]
+    # named partner rows -> pair view
+    a.ic[("OUT", "B")] = a.ic.pop(("OUT", C.OTHER))
+    b.ic[("IN", "A")] = b.ic.pop(("IN", C.OTHER))
+    pairs = ic_pairs(consolidate([g, a, b], WEEKS), [w.code_week_period for w in WEEKS])
+    assert pairs == [{"payer": "A", "receiver": "B", "paid": D("0.04"), "received": D("0.03"), "diff": D("-0.01")}]
 
 
 @pytest.fixture

@@ -15,7 +15,8 @@ import streamlit as st
 from components import report_ui as U
 from components import theme as T
 from components.forecast_grid import period_label
-from domain.consolidation import CONSO_ROWS, IC_TOLERANCE_KEUR, Consolidation, bridge, consolidate
+from domain.consolidation import (CONSO_ROWS, GMBH, GMBH_BU, IC_TOLERANCE_KEUR, Consolidation, bridge,
+                                  consolidate, ic_pairs, ic_reconciliation)
 from services.auth_service import AccessDenied
 from services.bootstrap import get_context, require_user
 from services.report_service import CHECK, CRITICAL, INFO, Report, ReportService
@@ -299,8 +300,8 @@ def export() -> bytes:
 
 # =========================================================================== tabs
 st.write("")
-t_conso, t_comp, t_fx, t_chk, t_det, t_ass = st.tabs([
-    "FC CONSO", "Companies", "Completeness & FX",
+t_conso, t_comp, t_ic, t_fx, t_chk, t_det, t_ass = st.tabs([
+    "FC CONSO", "Companies", "Intercompany", "Completeness & FX",
     f"Checks · {n_crit + n_chk}" if (n_crit + n_chk) else "Checks", "Company detail", "Assumptions"])
 
 with t_conso:
@@ -348,6 +349,78 @@ with t_comp:
                 + "".join(U.num_cell(c.monthly["closing"][p] - sums[p], "m") for p in c.periods)
                 + "<td></td><td></td></tr>")
     st.markdown(U.table([head], body), unsafe_allow_html=True)
+
+with t_ic:
+    st.caption("Intercompany payments are eliminated in the group. Every IC payment should be booked twice – paid by "
+               "one company and received by the other – so received − paid = 0. The difference is split into three "
+               "flows by the template rows: IC (VIDE-GMBH) and IC (other VI-group). kEUR, IC difference = received − "
+               f"paid, tolerance ±{IC_TOLERANCE_KEUR:.0f} kEUR per month.")
+    ic_opts = [period_label(p, True) for p in c.periods] + ["3 months"]
+    ic_pick = st.segmented_control("Period", ic_opts, default="3 months", key="rep_ic_period",
+                                   label_visibility="collapsed") or "3 months"
+    ic_col = "TOTAL" if ic_pick == "3 months" else c.periods[ic_opts.index(ic_pick)]
+    ic_wcs = [w.code_week_period for w in c.weeks if ic_col == "TOTAL" or w.code_period_value == ic_col]
+    limit = IC_TOLERANCE_KEUR * (len(c.periods) if ic_col == "TOTAL" else 1)
+
+    def _pill(diff: Decimal) -> str:
+        ok_ = abs(diff) <= limit
+        return (f'<span class="rp-st" style="color:{"#047857" if ok_ else "#B91C1C"};background:#F4F7FC">'
+                f'● {"OK" if ok_ else "Check"}</span>')
+
+    st.markdown(U.card_head("Where the difference comes from", f"{ic_pick} · kEUR", "link"), unsafe_allow_html=True)
+    recon = ic_reconciliation(c)
+    body = []
+    for r in recon:
+        body.append(f'<tr><td class="lbl">{U.E(r["label"])}</td>{U.num_cell(r["received"][ic_col])}'
+                    f'{U.num_cell(r["paid"][ic_col])}{U.num_cell(r["diff"][ic_col])}<td>{_pill(r["diff"][ic_col])}</td></tr>')
+    tot = sum((r["diff"][ic_col] for r in recon), Decimal(0))
+    body.append(f'<tr class="grand"><td class="lbl">IC difference (= Check line in FC CONSO)</td>'
+                f'{U.num_cell(sum((r["received"][ic_col] for r in recon), Decimal(0)))}'
+                f'{U.num_cell(sum((r["paid"][ic_col] for r in recon), Decimal(0)))}{U.num_cell(tot)}<td></td></tr>')
+    st.markdown(U.table(['<tr><th class="lbl">IC flow</th><th>Received</th><th>Paid</th><th>Difference</th>'
+                         '<th>Status</th></tr>'], body), unsafe_allow_html=True)
+    st.caption(f"Subsidiaries → VIDE GmbH: what {GMBH_BU} books as IC receipts vs what the subsidiaries book in "
+               "“IC (VIDE-GMBH)” outflow. VIDE GmbH → subsidiaries: the reverse. Between subsidiaries: “IC (other "
+               "VI-group)” receipts vs payments of all subsidiaries.")
+
+    st.write("")
+    st.markdown(U.card_head("Who books what", f"per company · {ic_pick} · kEUR · sorted by net IC", "grid"),
+                unsafe_allow_html=True)
+
+    def _ic(x, d: str, gmbh: bool) -> Decimal:
+        return sum((sum(v.get(w, Decimal(0)) for w in ic_wcs) for (dd, cp), v in x.flows.ic.items()
+                    if dd == d and ((cp == GMBH) == gmbh)), Decimal(0))
+
+    rows_ = []
+    for x in rep.consolidated:
+        vals = (_ic(x, "IN", True), _ic(x, "IN", False), _ic(x, "OUT", True), _ic(x, "OUT", False))
+        if any(vals):
+            rows_.append((x, vals, vals[0] + vals[1] - vals[2] - vals[3]))
+    body = []
+    for x, (in_g, in_o, out_g, out_o), net_ in sorted(rows_, key=lambda r: -abs(r[2])):
+        tag_ = (f' <span class="rp-st" style="color:{T.PRIMARY};background:#EEF5FF">VIDE GmbH</span>'
+                if x.business_unit == GMBH_BU else "")
+        body.append(f'<tr><td class="lbl"><b>{U.E(x.business_unit)}</b> <span style="color:{T.MUTED}">{U.E(x.name)}'
+                    f'</span>{tag_}</td>{U.num_cell(in_g)}{U.num_cell(in_o)}{U.num_cell(out_g)}{U.num_cell(out_o)}'
+                    f'{U.num_cell(net_)}</tr>')
+    if body:
+        st.markdown(U.table(['<tr><th class="lbl" rowspan="1">Company</th><th>Received ← GmbH</th>'
+                             '<th>Received ← other VI</th><th>Paid → GmbH</th><th>Paid → other VI</th>'
+                             '<th>Net (received − paid)</th></tr>'], body), unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="rp-ok">✓ No intercompany payments in this period.</div>', unsafe_allow_html=True)
+
+    pairs = ic_pairs(c, ic_wcs)
+    if pairs:
+        st.write("")
+        st.markdown(U.card_head("Named partner pairs", "rows “IC from / to <partner>” · payer vs receiver", "flow"),
+                    unsafe_allow_html=True)
+        body = [f'<tr><td class="lbl"><b>{U.E(r["payer"])}</b> → <b>{U.E(r["receiver"])}</b></td>'
+                f'{U.num_cell(r["paid"])}{U.num_cell(r["received"])}{U.num_cell(r["diff"])}<td>{_pill(r["diff"])}</td></tr>'
+                for r in sorted(pairs, key=lambda r: -abs(r["diff"]))]
+        st.markdown(U.table(['<tr><th class="lbl">Payer → receiver</th><th>Paid (payer)</th>'
+                             '<th>Received (receiver)</th><th>Difference</th><th>Status</th></tr>'], body),
+                    unsafe_allow_html=True)
 
 with t_fx:
     st.caption(f"All companies of the group · FX {rep.fx_reference} · rate = 1 EUR in local currency.")
