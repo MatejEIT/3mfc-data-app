@@ -19,7 +19,7 @@ from domain.calendar import snapshot_periods
 from domain.models import IcDetail, Severity, SubmissionStatus, ValueOrigin
 from domain.validation import visible_issues
 from services.auth_service import AccessDenied
-from services.bootstrap import get_context, require_user
+from services.bootstrap import data_changed, get_context, remember_choice, require_user, restore_choice
 from services.repository import RevisionConflict, SnapshotFinal
 
 ctx = get_context()
@@ -47,8 +47,12 @@ with panel:
     goto = st.session_state.pop("goto_forecast", None)      # set by HQ Workspace (click on a company)
     if goto and goto[0] in labels and goto[1] in snapshots:
         st.session_state["sel_bu"], st.session_state["sel_snapshot"] = goto
+    restore_choice("sel_bu", "app_bu", labels)
+    restore_choice("sel_snapshot", "app_snapshot", snapshots)
     bu = c1.selectbox("Company", list(labels), format_func=labels.get, key="sel_bu")
     snapshot = c2.selectbox("Snapshot", snapshots, key="sel_snapshot")
+    remember_choice("app_bu", bu)
+    remember_choice("app_snapshot", snapshot)
     months = snapshot_periods(snapshot)
     ALL, TOTALS = "All weeks", "Month totals"
     period_opts = [ALL] + [G.period_label(p, short=True) for p in months] + [TOTALS]
@@ -190,6 +194,7 @@ with work:
             return
         for k_ in (pend_key, lbl_key, ic_key, idem_key):
             st.session_state.pop(k_, None)
+        data_changed()                       # HQ Workspace / HQ report show the new numbers
         load_workspace(force=True)
         st.session_state["flash"] = ("success", out.message)
 

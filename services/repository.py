@@ -206,6 +206,15 @@ class ForecastRepository:
     def submissions(self, snapshot: str) -> pd.DataFrame:
         return read_app(self.gw, S.SUBMISSION, {"CODE_SNAPSHOT": snapshot})
 
+    def head_and_status(self, snapshot: str, bu: str) -> tuple[RevisionInfo | None, pd.DataFrame, dict]:
+        """Head revision of one company + submission rows + snapshot status in ONE job (opening a forecast)."""
+        revs, sub, snap = self.gw.read_many([
+            Read(table=S.REVISION, where={"CODE_SNAPSHOT": snapshot, "CODE_BUSINESS_UNIT": bu, "STATUS": "COMMITTED"}),
+            Read(table=S.SUBMISSION, where={"CODE_SNAPSHOT": snapshot}),
+            Read(table=S.SNAPSHOT, where={"CODE_SNAPSHOT": snapshot})])
+        heads = sorted((_rev_from_row(r) for _, r in revs.iterrows()), key=lambda r: r.revision_no)
+        return (heads[-1] if heads else None), sub, (snap.iloc[0].to_dict() if not snap.empty else {})
+
     def submissions_and_status(self, snapshot: str) -> tuple[pd.DataFrame, dict]:
         """Submission rows and the snapshot status row in ONE job."""
         sub, snap = self.gw.read_many([Read(table=S.SUBMISSION, where={"CODE_SNAPSHOT": snapshot}),

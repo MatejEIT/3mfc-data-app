@@ -99,10 +99,11 @@ class ForecastService:
         ent = ent[ent["CODE_BUSINESS_UNIT"] == bu].iloc[0]
         names = self.ref.company_names()
         calendar = self.ref.calendar(snapshot)
-        state = self.repo.load_state(snapshot, bu, revision)
+        head, sub, snap_row = self.repo.head_and_status(snapshot, bu)          # job 1
+        rev = revision or head
+        state = self.repo.load_state(snapshot, bu, rev) if rev else ForecastState(snapshot, bu, None)  # job 2
         lines = with_added_partners(bu, self.ref.lines(bu), state.labels, names)
         result = calculate(lines, calendar, state.cells)
-        sub, snap_row = self.repo.submissions_and_status(snapshot)
         sub = sub[sub["CODE_BUSINESS_UNIT"] == bu]
         status = SubmissionStatus(sub.iloc[0]["STATUS"]) if not sub.empty else SubmissionStatus.DRAFT
         cps = set(self.ref.counterparties()["CODE_COUNTERPARTY_ENTITY"])
@@ -153,9 +154,7 @@ class ForecastService:
 
     def _previous_result(self, snapshot: str, bu: str) -> ForecastResult | None:
         """Latest committed forecast of the previous snapshot (incl. HQ adjustments), or None."""
-        if snapshot not in self.repo.snapshots():
-            return None
-        state = self.repo.load_state(snapshot, bu)
+        state = self.repo.load_state(snapshot, bu)        # no head -> None without reading the inputs
         if state.head is None:
             return None
         lines = with_added_partners(bu, self.ref.lines(bu), state.labels, self.ref.company_names())

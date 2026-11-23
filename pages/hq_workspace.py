@@ -5,15 +5,19 @@ details (compare submitted vs current, create the next snapshot) collapsed.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pandas as pd
 import streamlit as st
 
 from components import report_ui as U
 from components import theme as T
 from components.forecast_grid import period_label
+from domain.consolidation import IC_TOLERANCE_KEUR, ic_reconciliation
 from domain.calendar import next_period, snapshot_periods
 from services.auth_service import AccessDenied
-from services.bootstrap import get_context, require_user
+from services.bootstrap import (cached_submissions_and_status, data_changed, get_context, remember_choice,
+                                require_user, restore_choice)
 from services.report_service import ReportService
 
 ctx = get_context()
@@ -37,10 +41,12 @@ with st.container(key="ctl_panel"):
         st.info("No snapshot yet – create the first one under **New snapshot** below.")
     else:
         c1, c2 = st.columns([1.2, 5])
+        restore_choice("hq_snap", "app_snapshot", snapshots)
         snap = c1.selectbox("Snapshot", snapshots, key="hq_snap")
+        remember_choice("app_snapshot", snap)
         months = [pd.Timestamp(f"{p[:4]}-{p[4:]}-01").strftime("%b %Y") for p in snapshot_periods(snap)]
         c1.caption(f"Forecast horizon: **{months[0]} – {months[-1]}**")
-        subs = ctx.repo.submissions(snap)
+        subs, snap_status = cached_submissions_and_status(snap)     # one job, shared 60 s
         view = entities[["CODE_BUSINESS_UNIT", "NAME_ENTITY", "CODE_REGION", "CODE_LOCAL_CURRENCY"]].merge(
             subs, on="CODE_BUSINESS_UNIT", how="left").fillna("")
         view["Status"] = view["STATUS"].map({"SUBMITTED": "Submitted", "DRAFT": "Not submitted"}).fillna("No forecast")
@@ -59,7 +65,6 @@ with st.container(key="ctl_panel"):
                           unsafe_allow_html=True)
 
         # ---- FINAL: HQ declares the current numbers of the snapshot final (read-only, used by HQ report)
-        snap_status = ctx.repo.snapshot_status(snap)
         is_final = snap_status.get("STATUS") == "FINAL"
 
         @st.dialog("Mark snapshot as FINAL" if not is_final else "Reopen snapshot")
@@ -75,6 +80,7 @@ with st.container(key="ctl_panel"):
             if st.button("Reopen" if is_final else "Mark FINAL", type="primary", width="stretch"):
                 with st.spinner("Saving…"):
                     (ctx.snapshots.reopen if is_final else ctx.snapshots.finalize)(user, snap, note)
+                data_changed()
                 for key_ in [k_ for k_ in st.session_state if str(k_).startswith(("report::", "ws::"))] +                         ["final_snapshots"]:
                     st.session_state.pop(key_, None)
                 st.rerun()
@@ -152,6 +158,34 @@ if view is not None:
                 missing = [x.business_unit for x in rep.companies if x.expected and x not in rep.consolidated]
                 if missing:
                     st.caption(f"Not included (no values or no FX rate): {', '.join(missing)}")
+
+            # ---- intercompany overview (details: HQ report › Intercompany)
+            recon = ic_reconciliation(cons)
+            ic_tot = sum((r["diff"]["TOTAL"] for r in recon), Decimal(0))
+            ic_limit = IC_TOLERANCE_KEUR * len(cons.periods)
+            ic_ok = abs(ic_tot) <= ic_limit
+            with st.expander(f"Intercompany · IC difference {U.k(ic_tot, False)} kEUR over 3 months · "
+                             f"{'within tolerance' if ic_ok else 'to check'}", expanded=False):
+                pill = lambda d: (f'<span class="rp-st" style="color:{"#047857" if abs(d) <= ic_limit else "#B91C1C"};'
+                                  f'background:#F4F7FC">● {"OK" if abs(d) <= ic_limit else "Check"}</span>')
+                body = [f'<tr><td class="lbl">{U.E(r["label"])}</td>{U.num_cell(r["received"]["TOTAL"])}'
+                        f'{U.num_cell(r["paid"]["TOTAL"])}{U.num_cell(r["diff"]["TOTAL"])}<td>{pill(r["diff"]["TOTAL"])}'
+                        '</td></tr>' for r in recon]
+                body.append(f'<tr class="grand"><td class="lbl">IC difference</td><td></td><td></td>'
+                            f'{U.num_cell(ic_tot)}<td></td></tr>')
+                st.markdown(U.table(['<tr><th class="lbl">IC flow · 3 months</th><th>Received</th><th>Paid</th>'
+                                     '<th>Difference</th><th>Status</th></tr>'], body), unsafe_allow_html=True)
+                nets = []
+                for x in rep.consolidated:
+                    n_ = sum((sum(v.values()) * (1 if d == "IN" else -1) for (d, _cp), v in x.flows.ic.items()),
+                             Decimal(0))
+                    if abs(n_) >= Decimal("0.5"):                # hide rounding noise (shown as 0 / −0)
+                        nets.append((x.business_unit, n_))
+                if nets:
+                    top = sorted(nets, key=lambda t: -abs(t[1]))[:5]
+                    st.caption("Largest net IC (received − paid) per company: "
+                               + " · ".join(f"**{bu_}** {U.k(v, False)}" for bu_, v in top)
+                               + " – full breakdown in **HQ report › Intercompany**.")
 
 # =========================================================================== 2. work area
 if view is not None:

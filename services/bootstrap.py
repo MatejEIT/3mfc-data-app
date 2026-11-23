@@ -65,3 +65,29 @@ def require_user() -> User:
         st.error("You are not signed in or have no access to this application.")
         st.stop()
     return user
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_submissions_and_status(snapshot: str):
+    """Submission rows + snapshot status, shared for 60 s: HQ Workspace re-runs on every click and must not
+    hit Keboola each time. Call data_changed() after any write of this session."""
+    return get_context().repo.submissions_and_status(snapshot)
+
+
+def data_changed() -> None:
+    """Forget cached forecast data after a save / submit / FINAL so every page shows the new numbers."""
+    cached_submissions_and_status.clear()
+    for key in [k for k in st.session_state if str(k).startswith("report::")]:
+        st.session_state.pop(key, None)
+
+
+# ------------------------------------------------------------------ remembered filters across pages
+# Streamlit drops the state of widgets of a page you leave; the choice is kept in a shared key instead
+# ("app_snapshot", "app_bu", ...) and put back into the widget when the page is opened again.
+def restore_choice(widget_key: str, shared_key: str, options) -> None:
+    if widget_key not in st.session_state and st.session_state.get(shared_key) in list(options):
+        st.session_state[widget_key] = st.session_state[shared_key]
+
+
+def remember_choice(shared_key: str, value) -> None:
+    st.session_state[shared_key] = value

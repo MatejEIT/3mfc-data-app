@@ -17,7 +17,7 @@ def test_open_save_and_reopen_job_budget(snapshot_service, forecast_service, gat
 
     gateway.jobs = 0
     forecast_service.open(hq, "202610", BU)
-    assert gateway.jobs <= 3          # warm: head revision, revision data, submission status
+    assert gateway.jobs == 2          # warm: head revision + submission status (one job), revision data
 
 
 def test_failed_save_is_all_or_nothing(snapshot_service, forecast_service, repo, gateway, hq):

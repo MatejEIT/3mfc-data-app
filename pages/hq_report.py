@@ -18,7 +18,7 @@ from components.forecast_grid import period_label
 from domain.consolidation import (CONSO_ROWS, GMBH, GMBH_BU, IC_TOLERANCE_KEUR, Consolidation, bridge,
                                   consolidate, ic_pairs, ic_reconciliation)
 from services.auth_service import AccessDenied
-from services.bootstrap import get_context, require_user
+from services.bootstrap import get_context, remember_choice, require_user, restore_choice
 from services.report_service import CHECK, CRITICAL, INFO, Report, ReportService
 
 ctx = get_context()
@@ -77,9 +77,15 @@ def load_report(snap: str, force: bool = False) -> Report:
 # =========================================================================== controls
 with st.container(key="rp_ctl"):
     c1, c2, _, c4 = st.columns([1.2, 1.4, 4.4, 0.9], vertical_alignment="bottom")
-    snap = c1.selectbox("Snapshot", snapshots, index=snapshots.index(default), key="rep_snap",
+    restore_choice("rep_snap", "app_snapshot", snapshots)
+    restore_choice("rep_view", "app_rep_view", ["Weeks", "Months"])
+    snap = c1.selectbox("Snapshot", snapshots, key="rep_snap",
+                        index=0 if "rep_snap" in st.session_state else snapshots.index(default),
                         format_func=lambda s: f"{s}  ·  FINAL" if s in finals else s)
-    view = c2.segmented_control("Show", ["Weeks", "Months"], default="Weeks", key="rep_view") or "Weeks"
+    remember_choice("app_snapshot", snap)
+    view = c2.segmented_control("Show", ["Weeks", "Months"], key="rep_view",
+                                default=None if "rep_view" in st.session_state else "Weeks") or "Weeks"
+    remember_choice("app_rep_view", view)
     if c4.button("Refresh", width="stretch", icon=":material/refresh:", help="Reload the numbers from Keboola"):
         st.session_state.pop("final_snapshots", None)
         load_report(snap, force=True)
