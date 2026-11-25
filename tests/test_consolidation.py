@@ -100,7 +100,7 @@ def test_ic_matrix_payer_by_receiver():
     assert m.mismatches(D(1)) == []
     from components.report_ui import ic_matrix_table
     html_ = ic_matrix_table(m, {"A": "Alpha"}, D("0.005"))
-    assert "Payer ↓" in html_ and "not spec." in html_ and 'class="c bad"' in html_ and "V001 does not name" in html_
+    assert "Payer ↓" in html_ and "not spec." in html_ and 'class="c bad"' in html_ and "not named" in html_
     # a partner that books nothing at all -> one-sided (amber) and a mismatch
     b.ic.pop(("IN", "A"))
     m2 = C.ic_matrix(consolidate([g, a, b], WEEKS), [w.code_week_period for w in WEEKS])

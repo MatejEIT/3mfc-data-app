@@ -162,10 +162,17 @@ CSS = f"""
 .rp-bar {{ display:inline-block; height:6px; border-radius:99px; vertical-align:middle; margin-left:8px; }}
 
 /* IC matrix (payer x receiver) */
-.rp-mx td.lbl {{ min-width:210px; }}
-.rp-mx th.pc {{ text-align:center; min-width:66px; }}
-.rp-mx td.c {{ text-align:center; min-width:66px; border-left:1px solid #F0F3F8; }}
-.rp-mx td.c small {{ display:block; font-size:10px; font-weight:550; opacity:.9; line-height:1.15; }}
+.rp-mx .rp-tw {{ max-height:none; }}
+.rp-mx .rp-t {{ table-layout:fixed; width:100%; font-size:11.5px; }}
+.rp-mx .rp-t th, .rp-mx .rp-t td {{ padding:5px 3px; }}
+.rp-mx .rp-t td.lbl, .rp-mx .rp-t th.lbl {{ width:150px; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  padding-left:9px; }}
+.rp-mx td.lbl .nm {{ display:block; font-size:10px; color:{T.MUTED}; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }}
+.rp-mx th.pc {{ text-align:center; }}
+.rp-mx th.sm {{ width:62px; }}
+.rp-mx td.c {{ text-align:center; border-left:1px solid #F0F3F8; overflow:hidden; }}
+.rp-mx td.c small {{ display:block; font-size:9px; font-weight:550; opacity:.9; line-height:1.1; white-space:normal; }}
 .rp-mx td.ok {{ background:#ECFDF3; color:#047857; font-weight:650; }}
 .rp-mx td.bad {{ background:#FEE2E2; color:#B91C1C; font-weight:750; }}
 .rp-mx td.one {{ background:#FFF4DE; color:#B45309; font-weight:650; }}
@@ -326,9 +333,9 @@ def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
         if m.other_side_unnamed(p, r):
             who = r if not rec else p
             return (f'<td class="c un" title="{E(tip)} – {E(who)} books IC without naming the counterparty">'
-                    f'{k(paid or rec)}<small>{E(who[:4])} does not name</small></td>')
+                    f'{k(paid or rec)}<small>not named</small></td>')
         if not paid or not rec:
-            side = "received only" if not paid else "paid only"
+            side = "rec. only" if not paid else "paid only"
             return f'<td class="c one" title="{E(tip)}">{k(paid or rec)}<small>{side}</small></td>'
         return f'<td class="c bad" title="{E(tip)}">{k(paid)}<small>rec. {k(rec)}</small></td>'
 
@@ -336,18 +343,19 @@ def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
     rows = m.parties + ([UNSPEC] if any(p == UNSPEC for p, _ in m.cells) else [])
     head = ('<tr><th class="lbl">Payer ↓ · receiver →</th>'
             + "".join(f'<th class="pc" title="{E(names.get(b, ""))}">{E(b[:4] if b != UNSPEC else "not spec.")}</th>'
-                      for b in cols) + '<th>Σ paid</th></tr>')
+                      for b in cols) + '<th class="sm">Σ paid</th></tr>')
     body = []
     for p in rows:
         name = "receiver did not name the payer" if p == UNSPEC else names.get(p, "")
-        body.append(f'<tr><td class="lbl"><b>{E(label(p))}</b> <span style="color:{T.MUTED}">{E(name)}</span></td>'
+        body.append(f'<tr><td class="lbl" title="{E(label(p))} {E(name)}"><b>{E(label(p))}</b>'
+                    f'<span class="nm">{E(name)}</span></td>'
                     + "".join(cell(p, r) for r in cols)
                     + (num_cell(m.paid_by(p), "t") if p != UNSPEC else '<td class="t z">–</td>') + "</tr>")
     rec_ = [sum((m.cell(p, r)["received"] for p in rows), Decimal(0)) for r in cols]
     paid_ = [m.paid_to(r) for r in cols]
-    body.append('<tr class="sum"><td class="lbl">Σ received (receiver’s books)</td>'
+    body.append('<tr class="sum"><td class="lbl" title="Σ received, as booked by the receiver">Σ received</td>'
                 + "".join(num_cell(v) for v in rec_) + f'{num_cell(sum(rec_, Decimal(0)), "t")}</tr>')
-    body.append('<tr class="grand"><td class="lbl">Difference received − paid</td>'
+    body.append('<tr class="grand"><td class="lbl" title="Difference received − paid">Difference</td>'
                 + "".join(num_cell(a - b) for a, b in zip(rec_, paid_))
                 + num_cell(sum(rec_, Decimal(0)) - sum(paid_, Decimal(0))) + "</tr>")
     legend = ('<div class="rp-legend"><span><i style="background:#ECFDF3;border:1px solid #A7E3C2"></i>both sides '
