@@ -326,3 +326,33 @@ with st.container(key="details"):
                      help="One-time: creates the first version from the imported Excel files for companies "
                           "without a forecast in this snapshot."):
             _run(ctx.snapshots.import_initial, "Importing…")
+
+    if snap:
+        with st.expander(f"Replace {snap} with Excel"):
+            st.caption(f"The companies' Excel forecasts for **{snap}** (loaded in Keboola) replace the current "
+                       "numbers. Each company gets a new version marked **Submitted** – earlier versions stay "
+                       "in the history and audit. Same Excel twice = no change.")
+            rbus = st.multiselect("Companies", list(entities["CODE_BUSINESS_UNIT"]),
+                                  default=list(entities["CODE_BUSINESS_UNIT"]), key=f"repl_bus::{snap}")
+
+            @st.dialog(f"Replace {snap} with Excel?")
+            def replace_dialog() -> None:
+                st.write(f"**{len(rbus)} companies** in snapshot **{snap}** get the numbers of their Excel file "
+                         "and status **Submitted**. Changes made in the app since then stay only in the history.")
+                if st.button("Replace", type="primary", width="stretch"):
+                    bar = st.progress(0.0, text="Replacing…")
+                    res = ctx.snapshots.replace_with_excel(
+                        user, snap, rbus, on_progress=lambda i, n, b: bar.progress((i - 1) / n, text=f"{b} ({i}/{n})"))
+                    bar.empty()
+                    data_changed()
+                    st.session_state["repl_result"] = (snap, res.created, res.skipped)
+                    st.rerun()
+
+            if st.button("Replace with Excel…", disabled=not rbus or is_final,
+                         help="Snapshot is FINAL – reopen it first." if is_final else None):
+                replace_dialog()
+            done = st.session_state.get("repl_result")
+            if done and done[0] == snap:
+                st.success(f"Replaced with Excel: {len(done[1])} companies.")
+                if done[2]:
+                    st.caption("Skipped: " + "; ".join(f"{k}: {v}" for k, v in done[2].items()))

@@ -1,6 +1,7 @@
 """Snapshot lifecycle: initial Excel import and rolling 2+1 creation (HQ only)."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Callable
 from decimal import Decimal
@@ -17,6 +18,7 @@ from domain.models import (
     Line,
     Provenance,
     RevisionKind,
+    RowType,
     Severity,
     ValueOrigin,
     ValueState,
@@ -72,6 +74,19 @@ def cells_from_seed(bu: str, snapshot: str, lines: list[Line], calendar: list[We
     return cells
 
 
+def excel_names(lines: list[Line], seed: pd.DataFrame) -> dict[str, str]:
+    """Customer/project names of THIS Excel (detail rows) that differ from the template text -> revision labels."""
+    if seed.empty or "LINE_DESCRIPTION" not in seed:
+        return {}
+    texts = seed.drop_duplicates("LINE_ID").set_index("LINE_ID")["LINE_DESCRIPTION"].astype(str).str.strip()
+    out = {}
+    for ln in lines:
+        text = texts.get(ln.line_id, "")
+        if ln.row_type == RowType.DETAIL and text and text not in ("nan", "None") and text != ln.label:
+            out[ln.line_id] = text
+    return out
+
+
 class SnapshotService:
     def __init__(self, repo: ForecastRepository, ref: ReferenceData):
         self.repo = repo
@@ -102,6 +117,53 @@ class SnapshotService:
                 [AuditEvent("", "", "", "", None, None, "", "", ChangeType.SYSTEM_CORRECTION,
                             f"Initial import from Excel seed ({len(cells)} input cells)")],
                 user.email, user.role, "Initial Excel import", f"import-{snapshot}-{bu}"))
+            res.created.append(bu)
+        return res
+
+    def replace_with_excel(self, user: User, snapshot: str, business_units: list[str],
+                           on_progress: Callable[[int, int, str], None] | None = None) -> SnapshotRunResult:
+        """HQ: the companies' Excel forecasts (staging seed) replace the current numbers of `snapshot`.
+
+        Each company gets ONE new revision on top of its history (nothing is deleted - the pre-filled or
+        edited versions stay readable and audited). The revision is SUBMITTED: the Excel file was the
+        company's submission. Customer/project names of this Excel travel as revision labels.
+        Idempotent per Excel content: clicking twice with the same file creates nothing new."""
+        user.require_hq()
+        res = SnapshotRunResult()
+        calendar = self.ref.calendar(snapshot)
+        ents = self.ref.entities()
+        currency = dict(zip(ents["CODE_BUSINESS_UNIT"], ents["CODE_LOCAL_CURRENCY"]))
+        heads = self.repo.head_revisions(snapshot)                              # 1 job
+        seeds = self.ref.seed_rows_many(business_units, snapshot)               # 1 job
+        self.ref.prefetch(business_units, snapshot)                             # 1 job (template lines)
+        for i, bu in enumerate(business_units, 1):
+            if on_progress:
+                on_progress(i, len(business_units), bu)
+            seed = seeds[seeds["CODE_BUSINESS_UNIT"] == bu] if not seeds.empty else seeds
+            if seed.empty:
+                res.skipped[bu] = "no Excel data for this snapshot"
+                continue
+            lines = self.ref.lines(bu)
+            now = utc_now()
+            cells = cells_from_seed(bu, snapshot, lines, calendar, seed, user.email, now)
+            labels = excel_names(lines, seed)
+            digest = hashlib.sha256("|".join(
+                f"{k[0]}:{k[1]}:{c.amount}" for k, c in sorted(cells.items())).encode()).hexdigest()[:16]
+            head = heads.get(bu)
+            src = ", ".join(sorted(set(seed["SOURCE_FILE"].astype(str)))) if "SOURCE_FILE" in seed else "Excel"
+            note = (f"Excel forecast of the company ({src}) replaces revision "
+                    f"{head.revision_no if head else '–'}; submitted in Excel, status SUBMITTED")
+            info = self.repo.commit(CommitRequest(
+                snapshot, bu, str(currency.get(bu, "")), head.revision_no if head else 0, RevisionKind.SUBMIT,
+                cells, [],
+                [AuditEvent("", "", "", "", None, None, "", "", ChangeType.SYSTEM_CORRECTION,
+                            f"Excel import: {len(cells)} input cells from {src}"),
+                 AuditEvent("", "", "", "", None, None, "", "", ChangeType.ENTITY_SUBMIT, note)],
+                user.email, user.role, note, f"excel-{snapshot}-{bu}-{digest}", new_id(),
+                labels=labels, metric_by_line={ln.line_id: ln.metric_code for ln in lines}))
+            if head is not None and info.revision_id == head.revision_id:
+                res.skipped[bu] = "already replaced with this Excel"
+                continue
             res.created.append(bu)
         return res
 

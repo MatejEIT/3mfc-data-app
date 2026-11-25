@@ -152,7 +152,7 @@ class ReferenceData:
         app, seed = self.gw.read_many([
             Read(table=S.LINE, where={"CODE_BUSINESS_UNIT": bu}),
             Read(bucket=self.s.bucket_weekly, name=SEED_TABLE, where={"CODE_BUSINESS_UNIT": bu},
-                 columns=("LINE_ID", "METRIC_CODE", "ROW_TYPE", "LINE_DESCRIPTION", "SOURCE_ROW"))])
+                 columns=("CODE_SNAPSHOT", "LINE_ID", "METRIC_CODE", "ROW_TYPE", "LINE_DESCRIPTION", "SOURCE_ROW"))])
         return self._build_lines(bu, app, seed)
 
     def prefetch(self, bus: list[str], snapshot: str) -> None:
@@ -165,8 +165,8 @@ class ReferenceData:
         app, seed, fx = self.gw.read_many([
             Read(table=S.LINE, where={"CODE_BUSINESS_UNIT": need_lines or [""]}),
             Read(bucket=self.s.bucket_weekly, name=SEED_TABLE, where={"CODE_BUSINESS_UNIT": need_lines or [""]},
-                 columns=("CODE_BUSINESS_UNIT", "LINE_ID", "METRIC_CODE", "ROW_TYPE", "LINE_DESCRIPTION",
-                          "SOURCE_ROW")),
+                 columns=("CODE_BUSINESS_UNIT", "CODE_SNAPSHOT", "LINE_ID", "METRIC_CODE", "ROW_TYPE",
+                          "LINE_DESCRIPTION", "SOURCE_ROW")),
             Read(bucket=self.s.bucket_fx, name="FT_3MFC_FX_3MONTH",
                  where={"CODE_BUSINESS_UNIT": need_fx or [""], "CODE_FORECAST_START_MONTH": snapshot})])
         for b in need_lines:
@@ -192,6 +192,10 @@ class ReferenceData:
             lines = [Line(r["LINE_ID"], r["METRIC_CODE"], RowType(r["ROW_TYPE"]), r["LINE_LABEL"],
                           int(float(r["SOURCE_ROW"] or 0))) for _, r in app.iterrows()]
         else:
+            # the seed holds several snapshots: template texts come from the EARLIEST one so they never
+            # change under older forecasts (newer customer/project names travel as revision labels)
+            if "CODE_SNAPSHOT" in seed.columns:
+                seed = seed.sort_values("CODE_SNAPSHOT", kind="stable")
             seed = seed.drop_duplicates("LINE_ID")
             lines = [Line(r["LINE_ID"], r["METRIC_CODE"], RowType(r["ROW_TYPE"]),
                           str(r["LINE_DESCRIPTION"]).strip() or METRICS[r["METRIC_CODE"]].label,
@@ -223,6 +227,11 @@ class ReferenceData:
     def seed_rows(self, bu: str, snapshot: str) -> pd.DataFrame:
         return read_source(self.gw, self.s.bucket_weekly, SEED_TABLE,
                            {"CODE_BUSINESS_UNIT": bu, "CODE_SNAPSHOT": snapshot})
+
+    def seed_rows_many(self, bus: list[str], snapshot: str) -> pd.DataFrame:
+        """Excel seed of many companies of one snapshot in ONE job."""
+        return read_source(self.gw, self.s.bucket_weekly, SEED_TABLE,
+                           {"CODE_BUSINESS_UNIT": list(bus) or [""], "CODE_SNAPSHOT": snapshot})
 
     # ---------------------------------------------------------------- FX
     def _fx(self, bu: str, snapshot: str) -> pd.DataFrame:
