@@ -138,6 +138,8 @@ class ForecastService:
         issues += BC.check_months_filled(bu, lines, cells, result.periods)
         issues += BC.check_signs(bu, lines, cells, label_of)
         issues += BC.entity_questions(bu)
+        issues += BC.check_min_cash(bu, result, ordered_weeks(ws.calendar), ws.fx_rates, ws.currency,
+                                    self.ref.min_cash_levels().get(bu[:4]))
         if extended:
             prev_snapshot = next_period(ws.snapshot, -1)
             issues += BC.check_vs_previous(bu, result, self._previous_result(prev_snapshot, bu), prev_snapshot)

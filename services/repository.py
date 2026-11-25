@@ -286,6 +286,24 @@ class ForecastRepository:
         self.gw.write_many([(S.AUDIT, audit), (S.SNAPSHOT, pd.DataFrame([row]))])
         return heads
 
+    # ----------------------------------------------------------------- HQ commentary
+    def snapshot_comments(self, snapshot: str) -> list[dict]:
+        """All versions of the HQ commentary of a snapshot, newest first (insert-only audit rows)."""
+        df = read_app(self.gw, S.AUDIT, {"CODE_SNAPSHOT": snapshot, "CHANGE_TYPE": ChangeType.HQ_COMMENT.value})
+        rows = [{"text": r["COMMENT"], "by": r["CHANGED_BY"], "at": r["CHANGED_AT_UTC"]} for _, r in df.iterrows()]
+        return sorted(reversed(rows), key=lambda r: r["at"], reverse=True)   # ties: later insert first
+
+    def add_snapshot_comment(self, snapshot: str, text: str, actor: str, role: str) -> None:
+        """New version of the HQ commentary (older versions stay - full history)."""
+        now = self.clock()
+        row = {"EVENT_ID": self.ids(), "WRITE_ID": self.ids(), "SUBMISSION_ID": "", "REVISION_ID": "",
+               "CODE_SNAPSHOT": snapshot, "CODE_BUSINESS_UNIT": "GROUP", "CODE_PERIOD_VALUE": "",
+               "CODE_WEEK_PERIOD": "", "LINE_ID": "", "METRIC_CODE": "", "OLD_VALUE_LCY": "", "NEW_VALUE_LCY": "",
+               "OLD_VALUE_STATE": "", "NEW_VALUE_STATE": "", "CODE_CURRENCY": "",
+               "CHANGE_TYPE": ChangeType.HQ_COMMENT.value, "CHANGED_BY": actor, "CHANGED_ROLE": role,
+               "CHANGED_AT_UTC": now, "COMMENT": text}
+        self.gw.write_many([(S.AUDIT, pd.DataFrame([row]))])
+
     # ----------------------------------------------------------------- writes
     def commit(self, req: CommitRequest) -> RevisionInfo:
         with _lock_for(req.snapshot, req.business_unit):

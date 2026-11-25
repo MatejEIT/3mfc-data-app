@@ -14,6 +14,7 @@ from components import report_ui as U
 from components import theme as T
 from components.forecast_grid import period_label
 from domain.consolidation import IC_TOLERANCE_KEUR, ic_reconciliation
+from domain.min_cash import classify, group_level
 from domain.calendar import next_period, snapshot_periods
 from services.auth_service import AccessDenied
 from services.bootstrap import (cached_submissions_and_status, data_changed, get_context, remember_choice,
@@ -97,6 +98,45 @@ with st.container(key="ctl_panel"):
             status_dialog()
 
 
+# =========================================================================== 1a. HQ commentary
+if view is not None:
+    st.markdown(U.CSS, unsafe_allow_html=True)
+    ckey = f"comments::{snap}"
+    if ckey not in st.session_state:
+        st.session_state[ckey] = ctx.repo.snapshot_comments(snap)
+    versions = st.session_state[ckey]
+
+    @st.dialog("HQ commentary", width="large")
+    def comment_dialog() -> None:
+        st.caption(f"Key points for snapshot {snap} – e.g. what is / is not included, assumptions for the approval. "
+                   "Shown in HQ Workspace and HQ report; every save is kept as a new version.")
+        text = st.text_area("Commentary", value=versions[0]["text"] if versions else "", height=260,
+                            placeholder="• Shareholder loan: …\n• No additional Verazine payment included\n• …")
+        if st.button("Save commentary", type="primary", width="stretch"):
+            if not text.strip():
+                st.warning("The commentary is empty.")
+                return
+            with st.spinner("Saving…"):
+                ctx.snapshots.save_comment(user, snap, text)
+            st.session_state.pop(ckey, None)
+            st.rerun()
+
+    with st.container(key="hq_comment"):
+        h1, h2 = st.columns([5, 1.2], vertical_alignment="center")
+        h1.markdown(f"**HQ commentary · snapshot {snap}**")
+        if h2.button("Edit commentary" if versions else "Add commentary", width="stretch", icon=":material/edit_note:"):
+            comment_dialog()
+        if versions:
+            st.markdown(U.commentary_card(versions[0]["text"], versions[0]["by"], versions[0]["at"]),
+                        unsafe_allow_html=True)
+            if len(versions) > 1:
+                with st.expander(f"Earlier versions · {len(versions) - 1}"):
+                    for v in versions[1:]:
+                        st.caption(f"{v['by']} · {str(v['at'])[:16].replace('T', ' ')} UTC")
+                        st.text(v["text"])
+        else:
+            st.caption("No commentary yet – add the key points for this snapshot (e.g. for the approval).")
+
 # =========================================================================== 1b. cash overview
 if view is not None:
     with st.container(key="cash_overview"):
@@ -120,6 +160,9 @@ if view is not None:
             low_w = min(cons.weeks, key=lambda w: cons.weekly["closing"][w.code_week_period])
             low = cons.weekly["closing"][low_w.code_week_period]
             up = g_net >= 0
+            g_lv = group_level([x.business_unit for x in rep.consolidated], rep.min_cash)
+            g_state = classify(low, g_lv)
+            g_txt = f" · group min {U.k(g_lv.minimum, False)}" if g_lv else ""
             st.markdown('<div class="rp-kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))">' + "".join([
                 U.kpi(f"Group opening · {period_label(cons.periods[0], True)}", U.k(g_open, False),
                       "Σ companies", "wallet", T.PRIMARY),
@@ -130,13 +173,16 @@ if view is not None:
                       f'<span class="rp-delta {"rp-up" if up else "rp-down"}">{"▲" if up else "▼"} '
                       f'{abs(g_net / g_open * 100):.0f} %</span> vs opening' if g_open else "vs opening",
                       "flow", T.POSITIVE if up else T.NEGATIVE),
-                U.kpi("Lowest weekly cash", U.k(low, False), f"{low_w.start:%d}–{low_w.end:%d %b %Y}", "low",
-                      T.NEGATIVE if low < 0 else "#0EA5E9"),
+                U.kpi("Lowest weekly cash", U.k(low, False),
+                      f"{low_w.start:%d}–{low_w.end:%d %b}{g_txt}"
+                      f"{' · BELOW' if g_state == 'below' else ''}", "low",
+                      T.NEGATIVE if low < 0 or g_state == "below" else "#0EA5E9"),
             ]) + "</div>", unsafe_allow_html=True)
 
             head = ('<tr><th class="lbl">Company</th><th>Trend (weekly closing)</th>'
                     f'<th>Opening {period_label(cons.periods[0], True)}</th>'
-                    f'<th>Closing {period_label(cons.periods[-1], True)}</th><th>Change</th><th>Lowest week</th></tr>')
+                    f'<th>Closing {period_label(cons.periods[-1], True)}</th><th>Change</th><th>Lowest week</th>'
+                    '<th>Min cash</th><th>vs minimum (−10 % / +20 %)</th></tr>')
             body = []
             rows = sorted(rep.consolidated, key=lambda x: -(x.flows.closing.get(wks[-1]) or 0))
             for x in rows:
@@ -152,12 +198,18 @@ if view is not None:
                     f'</span></td><td>{U.sparkline(ser, 120, 24, T.NEGATIVE if min(ser) < 0 else T.PRIMARY, "")}</td>'
                     f'{U.num_cell(o)}{U.num_cell(cl)}'
                     f'<td class="{"neg" if chg is not None and chg < 0 else ""}">{arrow}{U.k(chg) if chg is not None else "–"}</td>'
-                    f'{U.num_cell(lowest)}</tr>')
+                    f'{U.num_cell(lowest)}{U.min_cash_cells(x.business_unit, lowest, rep.min_cash)}</tr>')
             with st.expander(f"Cash balance per company · kEUR · {len(rows)} companies", expanded=False):
                 st.markdown(U.table([head], body), unsafe_allow_html=True)
                 missing = [x.business_unit for x in rep.companies if x.expected and x not in rep.consolidated]
                 if missing:
                     st.caption(f"Not included (no values or no FX rate): {', '.join(missing)}")
+                if g_lv:
+                    lo_, hi_ = g_lv.band
+                    st.caption(f"Minimum cash per company (HQ treasury) · status from the lowest weekly cash: below = "
+                               f"under minimum −{g_lv.lower * 100:.0f} %, above = over minimum +{g_lv.upper * 100:.0f} %. "
+                               f"Group minimum = Σ company minimums {U.k(g_lv.minimum, False)} kEUR "
+                               f"(band {U.k(lo_, False)}–{U.k(hi_, False)}).")
 
             # ---- intercompany overview (details: HQ report › Intercompany)
             recon = ic_reconciliation(cons)

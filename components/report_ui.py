@@ -97,6 +97,14 @@ CSS = f"""
 .rp-card-t {{ font-weight:700; font-size:15px; color:{T.TEXT}; display:flex; align-items:center; gap:9px; }}
 .rp-badge {{ width:28px; height:28px; border-radius:9px; display:grid; place-items:center; color:#fff;
   background:linear-gradient(135deg, #1E90FF, #1A4FA8 60%, #17265E); box-shadow:0 6px 14px -6px rgba(30,144,255,.8); }}
+.rp-comment {{ position:relative; background:#fff; border:1px solid #E3EAF5; border-left:4px solid {T.PRIMARY};
+  border-radius:14px; padding:14px 18px 10px; margin:4px 0 16px; box-shadow:0 10px 30px -22px rgba(23,38,94,.35);
+  font-size:13.5px; color:{T.TEXT}; line-height:1.5; }}
+.rp-comment-h {{ display:flex; align-items:center; gap:8px; font-weight:700; color:{T.DARK_NAVY}; margin-bottom:6px; }}
+.rp-comment-h svg {{ width:16px; height:16px; color:{T.PRIMARY}; }}
+.rp-comment-h span {{ margin-left:auto; font-weight:500; font-size:11.5px; color:{T.MUTED}; }}
+.rp-comment ul {{ margin:2px 0 6px 18px; padding:0; }} .rp-comment li {{ margin:3px 0; }}
+.rp-comment p {{ margin:4px 0; }}
 .rp-foot {{ display:flex; justify-content:space-between; gap:12px; margin-top:22px; padding:12px 18px; border-radius:14px;
   font-size:11.5px; color:#C9D8F5; letter-spacing:.02em;
   background:radial-gradient(500px 90px at 90% -60%, rgba(30,144,255,.5), transparent 70%),
@@ -298,3 +306,39 @@ def finding(severity: str, area: str, topic: str, message: str) -> str:
     return (f'<div class="rp-find" style="--c:{color}"><div class="ic">{sym}</div><div>'
             f'<div class="ar">{E(severity.upper())} · {E(area)} · {E(topic)}</div>'
             f'<div class="ms">{E(message)}</div></div></div>')
+
+
+# ------------------------------------------------------------------ minimum cash (domain/min_cash.py)
+_MC = {"below": ("#B91C1C", "#FEECEC", "▼ below min"), "within": ("#047857", "#ECFDF5", "● within band"),
+       "above": ("#1D4ED8", "#EEF5FF", "▲ above band")}
+
+
+def min_cash_cells(bu: str, lowest, levels: dict) -> str:
+    """Two <td>: the company's minimum cash (kEUR) and the band status of its lowest weekly cash."""
+    from domain.min_cash import classify, level_of
+    lv = level_of(bu, levels)
+    state = classify(lowest, lv)
+    if state is None:
+        return '<td class="z">–</td><td></td>'
+    fg, bg, txt = _MC[state]
+    return f'{num_cell(lv.minimum)}<td><span class="rp-st" style="color:{fg};background:{bg}">{txt}</span></td>'
+
+
+def commentary_card(text: str, by: str, at: str) -> str:
+    """HQ commentary of a snapshot (plain text, bullets kept)."""
+    lines = []
+    for raw in (text or "").splitlines():
+        t = raw.strip()
+        if not t:
+            continue
+        bullet = t[:1] in "•-*–"
+        body = E(t[1:].strip() if bullet else t)
+        lines.append(f'<li>{body}</li>' if bullet else f'<p>{body}</p>')
+    html_ = "".join(lines)
+    html_ = html_.replace("</li><p>", "</li></ul><p>").replace("</p><li>", "</p><ul><li>")
+    if html_.startswith("<li>"):
+        html_ = "<ul>" + html_
+    if html_.endswith("</li>"):
+        html_ += "</ul>"
+    return (f'<div class="rp-comment"><div class="rp-comment-h">{icon("flag")} HQ commentary'
+            f'<span>{E(by)} · {E(str(at)[:16].replace("T", " "))} UTC</span></div>{html_}</div>')

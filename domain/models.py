@@ -48,6 +48,7 @@ class ChangeType(str, Enum):
     CARRY_FORWARD = "CARRY_FORWARD"
     SYSTEM_CORRECTION = "SYSTEM_CORRECTION"
     SNAPSHOT_STATUS = "SNAPSHOT_STATUS"      # HQ marked a snapshot FINAL / reopened it
+    HQ_COMMENT = "HQ_COMMENT"                # HQ commentary on a snapshot (key points, assumptions)
 
 
 class RevisionKind(str, Enum):

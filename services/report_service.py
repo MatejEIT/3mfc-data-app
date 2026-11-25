@@ -13,6 +13,7 @@ from domain.calc import calculate, ordered_weeks
 from domain.calendar import snapshot_periods
 from domain.consolidation import IC_TOLERANCE_KEUR, CompanyFlows, Consolidation, company_flows, consolidate
 from domain.ic_partners import with_added_partners
+from domain.min_cash import ABOVE, BELOW, classify, group_level, level_of
 from services.reference_data import ReferenceData
 from services.repository import ForecastRepository
 
@@ -22,6 +23,11 @@ CRITICAL, CHECK, INFO = "Critical", "Check", "Info"
 # values in the client workbook). Matched on the 4-character company code. Change here when this changes.
 NO_DELIVERY_EXPECTED = frozenset({"V013", "V014"})
 _ORDER = {CRITICAL: 0, CHECK: 1, INFO: 2}
+
+
+def lowest_week(closing: dict[str, Decimal | None], weeks) -> tuple[Decimal | None, object]:
+    vals = [(v, w) for w in weeks if (v := closing.get(w.code_week_period)) is not None]
+    return min(vals, key=lambda t: t[0]) if vals else (None, None)
 
 
 @dataclass
@@ -48,6 +54,7 @@ class Report:
     conso: Consolidation | None
     companies: list[CompanyRow] = field(default_factory=list)
     checks: list[dict] = field(default_factory=list)
+    min_cash: dict = field(default_factory=dict)          # CODE_ENTITY -> MinCash (DIM_3MFC_APP_MIN_CASH)
 
     @property
     def consolidated(self) -> list[CompanyRow]:
@@ -82,6 +89,7 @@ class ReportService:
         rep = Report(snapshot, status_row.get("STATUS") or "OPEN", status_row.get("CREATED_BY", ""),
                      status_row.get("CREATED_AT_UTC", ""), "", snapshot_periods(snapshot), None)
         flows: list[CompanyFlows] = []
+        rep.min_cash = self.ref.min_cash_levels()
         for _, e in ents.iterrows():
             bu, cur = e["CODE_BUSINESS_UNIT"], e["CODE_LOCAL_CURRENCY"]
             rates = self.ref.fx_rates(bu, snapshot)
@@ -127,8 +135,28 @@ class ReportService:
                 rep.checks.append(_chk(CRITICAL, bu, "Liquidity",
                                        f"Negative closing cash in {len(neg)} week(s); lowest {low:,.0f} kEUR "
                                        f"({lw.start:%d %b}–{lw.end:%d %b %Y})"))
+            lv = level_of(bu, rep.min_cash)
+            low_c, low_w = lowest_week(cf.closing, weeks)
+            state = classify(low_c, lv)
+            if state == BELOW and not neg:
+                rep.checks.append(_chk(CHECK, bu, "Minimum cash",
+                                       f"Lowest cash {low_c:,.0f} kEUR ({low_w.start:%d %b}–{low_w.end:%d %b}) is below "
+                                       f"the minimum cash level {lv.minimum:,.0f} kEUR (−{lv.lower * 100:.0f} %: "
+                                       f"{lv.band[0]:,.0f})"))
+            elif state == ABOVE:
+                rep.checks.append(_chk(INFO, bu, "Minimum cash",
+                                       f"Cash stays above the target band all horizon – lowest {low_c:,.0f} kEUR vs "
+                                       f"minimum {lv.minimum:,.0f} kEUR (+{lv.upper * 100:.0f} %: {lv.band[1]:,.0f}); "
+                                       "excess cash"))
         if flows:
             rep.conso = consolidate(flows, weeks)
+            g_lv = group_level([x.business_unit for x in flows], rep.min_cash)   # Σ minimums of consolidated cos
+            g_low = min((rep.conso.weekly["closing"][w.code_week_period] for w in weeks), default=None)
+            if g_low is not None and classify(g_low, g_lv) == BELOW:
+                rep.checks.append(_chk(CRITICAL, "Group", "Minimum cash",
+                                       f"Lowest group cash {g_low:,.0f} kEUR is below the group minimum cash level "
+                                       f"{g_lv.minimum:,.0f} kEUR (Σ company minimums, −{g_lv.lower * 100:.0f} %: "
+                                       f"{g_lv.band[0]:,.0f})"))
             for p in rep.conso.periods:
                 diff = rep.conso.monthly["ic_diff"][p]
                 if abs(diff) > IC_TOLERANCE_KEUR:

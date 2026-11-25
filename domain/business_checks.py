@@ -9,6 +9,8 @@ Business checks (WARNING) – plausibility only; the entity may submit anyway wi
     W_NEGATIVE_OUTFLOW       a cash outflow line is negative (outflows are entered as positive numbers)
     W_PREV_SNAPSHOT_DEVIATION  month-end cash differs > ±30 % from the previous snapshot's forecast
     W_ACTUALS_DEVIATION      average month-end cash differs > ±30 % from the last 6 closed months (IDL actuals)
+    W_BELOW_MIN_CASH         lowest weekly cash of a month is below the company's minimum cash level − 10 %
+                             (domain/min_cash.py); I_ABOVE_TARGET_CASH (INFO) when it stays above minimum + 20 %
 
 Questions (INFO, code prefix Q_) – fixed reminders for specific companies, e.g. V004 factoring.
 """
@@ -117,6 +119,40 @@ def check_vs_actuals(bu: str, result: ForecastResult, actual_closing: dict[str, 
                   f"Average forecast closing cash {_fmt_k(avg)} vs {_fmt_k(base)} average actual cash "
                   f"{months[0]}–{months[-1]} ({_pct(d)}, limit ±{DEVIATION_LIMIT * 100:.0f} %)",
                   bu, metric_code="CLOSING_CASH_BALANCE")]
+
+
+def check_min_cash(bu: str, result: ForecastResult, weeks, rate_of: dict[str, Decimal | None],
+                   currency: str, level) -> list[Issue]:
+    """Lowest weekly closing cash per month (kEUR) vs the company's minimum cash band (domain/min_cash.py)."""
+    from domain.min_cash import ABOVE, BELOW, classify
+    if level is None:
+        return []
+    minimum = level.minimum
+    lo, hi = level.band
+    issues, above = [], []
+    for p in result.periods:
+        rate = Decimal(1) if currency == "EUR" else rate_of.get(p)
+        vals = [(c.amount, w) for w in weeks if w.code_period_value == p
+                and (c := result.metric_weekly.get(("CLOSING_CASH_BALANCE", w.code_week_period))) is not None
+                and c.amount is not None]
+        if not rate or not vals:
+            continue
+        low, lw = min(vals, key=lambda t: t[0])
+        low_k = low / rate / 1000
+        state = classify(low_k, level)
+        if state == BELOW:
+            issues.append(Issue(Severity.WARNING, "W_BELOW_MIN_CASH",
+                                f"Lowest cash in {lw.start:%b %Y} ({lw.start:%d}–{lw.end:%d %b}) is {low_k:,.0f} kEUR – "
+                                f"below the minimum cash level {minimum:,.0f} kEUR (tolerance −{level.lower * 100:.0f} %: {lo:,.0f})",
+                                bu, p, lw.code_week_period, metric_code="CLOSING_CASH_BALANCE"))
+        elif state == ABOVE:
+            above.append(f"{lw.start:%b}")
+    if above:
+        issues.append(Issue(Severity.INFO, "I_ABOVE_TARGET_CASH",
+                            f"Cash stays above the target band in {', '.join(above)} (minimum {minimum:,.0f} kEUR "
+                            f"+{level.upper * 100:.0f} % = {hi:,.0f}) – excess cash could be used in the group", bu,
+                            metric_code="CLOSING_CASH_BALANCE"))
+    return issues
 
 
 def entity_questions(bu: str) -> list[Issue]:

@@ -162,6 +162,11 @@ class SnapshotService:
         self.repo.set_snapshot_status(snapshot, "OPEN", snapshot_periods(snapshot), self._fx_ref(snapshot),
                                       user.email, user.role.value, comment)
 
+    def save_comment(self, user: User, snapshot: str, text: str) -> None:
+        """HQ commentary on the snapshot (e.g. key points for the approval). HQ only, versioned."""
+        user.require_hq()
+        self.repo.add_snapshot_comment(snapshot, text.strip()[:8000], user.email, user.role.value)
+
     def _fx_ref(self, snapshot: str) -> str:
         return next_period(snapshot, -1)        # FX = IDL SK (BS) of the month before the snapshot
 

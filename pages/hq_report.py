@@ -18,6 +18,7 @@ from components.forecast_grid import period_label
 from domain.consolidation import (CONSO_ROWS, GMBH, GMBH_BU, IC_TOLERANCE_KEUR, Consolidation, bridge,
                                   consolidate, ic_pairs, ic_reconciliation)
 from services.auth_service import AccessDenied
+from domain.min_cash import classify, group_level, level_of
 from services.bootstrap import get_context, remember_choice, require_user, restore_choice
 from services.report_service import CHECK, CRITICAL, INFO, Report, ReportService
 
@@ -143,6 +144,9 @@ for w in wk:
     cum.append(acc)
 ic_worst = max(ic_months) if ic_months else Decimal(0)
 ic_col = T.NEGATIVE if ic_worst > IC_TOLERANCE_KEUR else T.POSITIVE
+g_lv = group_level([x.business_unit for x in rep.consolidated], rep.min_cash)
+g_state = classify(low, g_lv)
+g_txt = f" · group min {U.k(g_lv.minimum, False)}" if g_lv else ""
 cards = [
     U.kpi(f"Opening · {period_label(c.periods[0], True)}", U.k(opening, False),
           f"Σ companies · {c.weeks[0].start:%d}–{c.weeks[0].end:%d %b}", "wallet", T.PRIMARY, delay=0),
@@ -151,8 +155,9 @@ cards = [
           extra=U.sparkline(cum, 68, 26, color="#7CC0FF"), delay=.05, dark=True),
     U.kpi(f"Closing · {period_label(c.periods[-1], True)}", U.k(closing, False), "group · end of horizon", "flag",
           T.DARK_NAVY, extra=U.sparkline(closing_series, 68, 26, color=T.DARK_NAVY), delay=.1),
-    U.kpi("Lowest weekly cash", U.k(low, False), f"{low_w.start:%d}–{low_w.end:%d %b %Y}", "low",
-          T.NEGATIVE if low < 0 else "#0EA5E9", delay=.15),
+    U.kpi("Lowest weekly cash", U.k(low, False),
+          f"{low_w.start:%d}–{low_w.end:%d %b}{g_txt}{' · BELOW' if g_state == 'below' else ''}",
+          "low", T.NEGATIVE if low < 0 or g_state == "below" else "#0EA5E9", delay=.15),
     U.kpi("IC difference", U.k(ic_total, False), f"worst month {U.k(ic_worst, False)} · limit ±{IC_TOLERANCE_KEUR:.0f}",
           "link", ic_col, extra=U.gauge(float(ic_worst / IC_TOLERANCE_KEUR) if IC_TOLERANCE_KEUR else 0, ic_col),
           delay=.2),
@@ -161,6 +166,13 @@ cards = [
           extra=U.ring(n_ok / n_exp if n_exp else 0, T.NEGATIVE if n_crit else T.POSITIVE), delay=.25),
 ]
 st.markdown(f'<div class="rp-kpis">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+# =========================================================================== HQ commentary (from HQ Workspace)
+if f"comments::{snap}" not in st.session_state:
+    st.session_state[f"comments::{snap}"] = ctx.repo.snapshot_comments(snap)
+comments = st.session_state[f"comments::{snap}"]
+if comments:
+    st.markdown(U.commentary_card(comments[0]["text"], comments[0]["by"], comments[0]["at"]), unsafe_allow_html=True)
 
 # =========================================================================== charts
 FONT = dict(family="Source Sans Pro, Inter, system-ui, sans-serif", color=T.TEXT, size=12)
@@ -276,6 +288,9 @@ def companies_frame() -> pd.DataFrame:
             closings = [v for v in f.closing.values() if v is not None]
             row["Lowest week"] = round(float(min(closings))) if closings else None
             row["IC net 3 months"] = round(float(sum(f.weekly["ic_in"].values()) - sum(f.weekly["ic_out"].values())))
+        m = level_of(x.business_unit, rep.min_cash)
+        row["Min cash"] = None if m is None else float(m.minimum)
+        row["vs minimum"] = classify(min((v for v in f.closing.values() if v is not None), default=None), m)             if f is not None and x.status == "Consolidated" else None
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -301,6 +316,10 @@ def export() -> bytes:
         pd.DataFrame(rep.checks or [{"Severity": "", "Area": "", "Topic": "", "Message": "No findings"}]).to_excel(
             xw, sheet_name="Checks", index=False)
         pd.DataFrame({"Assumptions": ASSUMPTIONS}).to_excel(xw, sheet_name="Assumptions", index=False)
+        if comments:
+            pd.DataFrame([{"HQ commentary": ln} for ln in comments[0]["text"].splitlines()] +
+                         [{"HQ commentary": ""}, {"HQ commentary": f"{comments[0]['by']} · {comments[0]['at'][:16]} UTC"}]
+                         ).to_excel(xw, sheet_name="HQ commentary", index=False)
     return buf.getvalue()
 
 
@@ -328,7 +347,7 @@ with t_comp:
     head = ('<tr><th class="lbl">Company</th><th>Trend (weekly)</th>'
             f'<th>Opening {period_label(c.periods[0], True)}</th>'
             + "".join(f'<th class="m">{period_label(p, True)}</th>' for p in c.periods)
-            + '<th>Lowest week</th><th>IC net</th></tr>')
+            + '<th>Lowest week</th><th>Min cash</th><th>vs minimum</th><th>IC net</th></tr>')
     body = []
     for x in sorted(ok, key=lambda r: -(r.flows.month_closing.get(last) or 0)):
         f = x.flows
@@ -342,18 +361,19 @@ with t_comp:
         icn = sum(f.weekly["ic_in"].values()) - sum(f.weekly["ic_out"].values())
         body.append(f'<tr><td class="lbl"><b>{U.E(x.business_unit)}</b> <span style="color:{T.MUTED}">'
                     f'{U.E(x.name)}</span></td><td>{U.sparkline(series, 110, 26, T.NEGATIVE if min(series) < 0 else T.PRIMARY, "")}'
-                    f'</td>{U.num_cell(f.opening.get(wk[0]))}{cells}{U.num_cell(lowest)}{U.num_cell(icn)}</tr>')
+                    f'</td>{U.num_cell(f.opening.get(wk[0]))}{cells}{U.num_cell(lowest)}'
+                    f'{U.min_cash_cells(x.business_unit, lowest, rep.min_cash)}{U.num_cell(icn)}</tr>')
     sum_open = sum((x.flows.opening.get(wk[0]) or 0 for x in ok), Decimal(0))
     sums = {p: sum((x.flows.month_closing.get(p) or 0 for x in ok), Decimal(0)) for p in c.periods}
     body.append('<tr class="total"><td class="lbl">Σ companies</td><td></td>' + U.num_cell(sum_open)
-                + "".join(U.num_cell(sums[p], "m") for p in c.periods) + "<td></td><td></td></tr>")
+                + "".join(U.num_cell(sums[p], "m") for p in c.periods) + "<td></td><td></td><td></td><td></td></tr>")
     body.append('<tr class="sum"><td class="lbl">Group closing (FC CONSO)</td><td></td>'
                 + U.num_cell(c.monthly["opening"]["TOTAL"])
-                + "".join(U.num_cell(c.monthly["closing"][p], "m") for p in c.periods) + "<td></td><td></td></tr>")
+                + "".join(U.num_cell(c.monthly["closing"][p], "m") for p in c.periods) + "<td></td><td></td><td></td><td></td></tr>")
     body.append('<tr class="memo"><td class="lbl">Difference group − Σ companies</td><td></td>'
                 + U.num_cell(c.monthly["opening"]["TOTAL"] - sum_open)
                 + "".join(U.num_cell(c.monthly["closing"][p] - sums[p], "m") for p in c.periods)
-                + "<td></td><td></td></tr>")
+                + "<td></td><td></td><td></td><td></td></tr>")
     st.markdown(U.table([head], body), unsafe_allow_html=True)
 
 with t_ic:

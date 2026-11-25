@@ -22,7 +22,7 @@ from domain.ic_partners import add_partner_rows, partners_of
 from domain.models import CalendarStatus, Line, RowType, WeekPeriod
 from services import schema as S
 from services.config import Settings
-from services.keboola_client import Gateway, Read, read_source
+from services.keboola_client import Gateway, Read, read_app, read_source
 
 SEED_TABLE = "FT_3MFC_APP_WEEKLY_INPUT_SEED"
 
@@ -82,6 +82,27 @@ class ReferenceData:
             df = read_source(self.gw, self.s.bucket_bootstrap, "DIM_3MFC_APP_COUNTERPARTY")
             return df[df["IS_ACTIVE"].astype(str).isin(["1", "1.0", "1.00000"])] if "IS_ACTIVE" in df else df
         return self._cached(("counterparties",), load)
+
+    def min_cash_levels(self):
+        """Minimum cash per company (kEUR + tolerances) from DIM_3MFC_APP_MIN_CASH. Fail-soft: {} when the table
+        cannot be read - the minimum-cash checks are then simply not shown."""
+        from domain.min_cash import MinCash
+
+        def load():
+            try:
+                df = read_app(self.gw, S.MIN_CASH)
+            except Exception:              # noqa: BLE001 - plausibility data only, never break the app
+                return {}
+            out = {}
+            for _, r in df.iterrows():
+                try:
+                    out[str(r["CODE_ENTITY"]).strip()[:4]] = MinCash(
+                        Decimal(str(r["MIN_CASH_KEUR"])), Decimal(str(r["LOWER_TOLERANCE"] or "0.10")),
+                        Decimal(str(r["UPPER_TOLERANCE"] or "0.20")))
+                except (ArithmeticError, ValueError):
+                    continue
+            return out
+        return self._cached(("min_cash",), load)
 
     def metric_dictionary(self) -> list[dict]:
         return read_source(self.gw, self.s.bucket_bootstrap, "DIM_3MFC_APP_METRIC").to_dict("records")

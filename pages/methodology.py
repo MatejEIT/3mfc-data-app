@@ -67,6 +67,7 @@ anyway with a comment; the comment and the accepted findings are stored in the a
 | Negative inflow / outflow | inflows and outflows are entered as positive numbers (bank financing may be ±) |
 | Previous snapshot | month-end closing cash differs more than ±30 % from the previous snapshot's forecast |
 | Actuals | average forecast closing cash differs more than ±30 % from the average month-end cash of the last 6 closed months (IDL actuals, account 12200, LCY) |
+| Minimum cash | the lowest weekly cash of a month (converted to kEUR) is below the company's minimum cash level − 10 %; staying above minimum + 20 % is shown as information (excess cash). Group minimum = Σ company minimums |
 | Pre-filled month | the 3rd month is still pre-filled from the previous snapshot (keeping it is allowed) |
 | Company questions | fixed reminders, e.g. V004: factoring repayment |
 """)
