@@ -72,6 +72,53 @@ def test_ic_reconciliation_splits_the_difference_by_flow_and_pairs():
     assert pairs == [{"payer": "A", "receiver": "B", "paid": D("0.04"), "received": D("0.03"), "diff": D("-0.01")}]
 
 
+def test_ic_matrix_payer_by_receiver():
+    import domain.consolidation as C
+    g = _flows("V001DE", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                          ("L_IC_OTHER_IN", "202610_W1"): 300,                  # GmbH: received, payer not named
+                          ("L_INTERCOMPANY_OTHER_OUTFLOW", "202610_W2"): 50}, 1)
+    a = _flows("A", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                     ("L_INTERCOMPANY_GMBH_OUTFLOW", "202610_W1"): 200,           # A -> GmbH (named by the template)
+                     ("L_INTERCOMPANY_OTHER_OUTFLOW", "202610_W1"): 40}, 1)
+    b = _flows("B", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000, ("L_IC_OTHER_IN", "202610_W1"): 30}, 1)
+    a.ic[("OUT", "B")] = a.ic.pop(("OUT", C.OTHER))                                # A names B as partner
+    b.ic[("IN", "A")] = b.ic.pop(("IN", C.OTHER))
+    c = consolidate([g, a, b], WEEKS)
+    m = C.ic_matrix(c, [w.code_week_period for w in WEEKS])
+    assert m.parties == ["V001DE", "A", "B"]                                       # VIDE GmbH first
+    assert m.cell("A", "V001DE") == {"paid": D("0.2"), "received": D(0)}
+    assert m.cell(C.UNSPEC, "V001DE")["received"] == D("0.3")
+    assert m.cell("V001DE", C.UNSPEC)["paid"] == D("0.05")
+    assert m.cell("A", "B") == {"paid": D("0.04"), "received": D("0.03")}
+    assert m.unspecified == (D("0.05"), D("0.3"))
+    # Σ received − Σ paid over the whole matrix = the group IC check line
+    total = sum((v["received"] - v["paid"] for v in m.cells.values()), D(0))
+    assert total == c.monthly["ic_diff"]["TOTAL"]
+    # A -> GmbH: GmbH books its receipts without naming the payer -> not a pair mismatch, just unattributed
+    assert m.other_side_unnamed("A", "V001DE")
+    assert [(x["payer"], x["receiver"]) for x in m.mismatches(D("0.005"))] == [("A", "B")]
+    assert m.mismatches(D(1)) == []
+    from components.report_ui import ic_matrix_table
+    html_ = ic_matrix_table(m, {"A": "Alpha"}, D("0.005"))
+    assert "Payer ↓" in html_ and "not spec." in html_ and 'class="c bad"' in html_ and "V001 does not name" in html_
+    # a partner that books nothing at all -> one-sided (amber) and a mismatch
+    b.ic.pop(("IN", "A"))
+    m2 = C.ic_matrix(consolidate([g, a, b], WEEKS), [w.code_week_period for w in WEEKS])
+    assert not m2.other_side_unnamed("A", "B") and ("A", "B") in [(x["payer"], x["receiver"]) for x in m2.mismatches(D(0))]
+    assert 'class="c one"' in ic_matrix_table(m2, {}, D("0.005"))
+
+
+def test_ic_without_partner_warns_the_company():
+    from domain.business_checks import check_ic_partner
+    from domain.models import Line, RowType
+    base = Line("X_IC89", "INTERCOMPANY_OTHER_OUTFLOW", RowType.DETAIL, "IC (other VI-group)", 89)
+    partner = Line("X_P", "INTERCOMPANY_OTHER_OUTFLOW", RowType.DETAIL, "IC to V016MX", 89, ic_partner="V016MX")
+    cells = {c.key: c for c in [cell("X_IC89", "202610_W2", 5000), cell("X_P", "202610_W1", 7000)]}
+    issues = check_ic_partner(BU, [base, partner], cells)
+    assert [i.code for i in issues] == ["W_IC_NO_PARTNER"] and issues[0].line_id == "X_IC89"
+    assert "IC paid without a partner company" in issues[0].message
+
+
 @pytest.fixture
 def snap(snapshot_service, hq):
     snapshot_service.import_initial(hq, "202610", [BU])
@@ -134,3 +181,26 @@ def test_not_expected_companies_are_info_and_rates_grouped_by_currency(snap, rep
     assert rates["USD"]["Rate"] == D("1.1") and rates["USD"]["Used"] and rates["USD"]["Companies"] == [BU]
     assert rates["EUR"]["Rate"] == D(1) and set(rates["EUR"]["Companies"]) == {"V001DE", "V013DE"}
 
+
+
+def test_ic_matrix_uses_the_pair_list_for_unnamed_other_vi_group():
+    import domain.consolidation as C
+    from domain.ic_partners import single_partners
+    bus = {"V002": "V002US", "V016": "V016MX", "V008": "V008PL", "V017": "V017EE", "V010": "V010FR"}
+    one = single_partners(bus)
+    assert one["V002US"] == "V016MX" and one["V016MX"] == "V002US"
+    assert "V008PL" not in one and one["V017EE"] == "V008PL"            # V008 has two partners -> ambiguous
+    a = _flows("V002US", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                          ("L_INTERCOMPANY_OTHER_OUTFLOW", "202610_W1"): 40}, 1)   # Excel: no counterparty
+    b = _flows("V016MX", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000, ("L_IC_OTHER_IN", "202610_W1"): 40}, 1)
+    p = _flows("V008PL", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                          ("L_INTERCOMPANY_OTHER_OUTFLOW", "202610_W1"): 10}, 1)
+    c = consolidate([a, b, p], WEEKS)
+    wcs = [w.code_week_period for w in WEEKS]
+    m = C.ic_matrix(c, wcs, pair_partner=one)
+    assert m.cell("V002US", "V016MX") == {"paid": D("0.04"), "received": D("0.04")}
+    assert ("V002US", "V016MX") in m.assumed and m.mismatches(D(0)) == []
+    assert m.cell("V008PL", C.UNSPEC)["paid"] == D("0.01")              # ambiguous stays not specified
+    assert C.ic_matrix(c, wcs).cell("V002US", C.UNSPEC)["paid"] == D("0.04")   # without the list: unnamed
+    from components.report_ui import ic_matrix_table
+    assert 'class="c as ok"' in ic_matrix_table(m, {}, D("0.005"))

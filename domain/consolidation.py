@@ -245,6 +245,86 @@ def ic_reconciliation(c: Consolidation, gmbh_bu: str = GMBH_BU) -> list[dict]:
     return rows
 
 
+UNSPEC = "?"            # counterparty not named by the company that booked the amount
+
+
+@dataclass
+class IcMatrix:
+    """Who pays whom (kEUR). cells[(payer, receiver)] = {"paid": as booked by the payer,
+    "received": as booked by the receiver}. A side that does not name its counterparty is
+    booked against UNSPEC (row / column 'not specified')."""
+    parties: list[str]                                        # companies with IC, VIDE GmbH first
+    cells: dict[tuple[str, str], dict[str, Decimal]]
+    assumed: set[tuple[str, str]] = field(default_factory=set)   # cells with a partner from the pair list
+
+    def cell(self, payer: str, receiver: str) -> dict[str, Decimal]:
+        return self.cells.get((payer, receiver), {"paid": ZERO, "received": ZERO})
+
+    def paid_by(self, payer: str) -> Decimal:
+        return sum((v["paid"] for (p, _), v in self.cells.items() if p == payer), ZERO)
+
+    def received_by(self, receiver: str) -> Decimal:
+        return sum((v["received"] for (_, r), v in self.cells.items() if r == receiver), ZERO)
+
+    def paid_to(self, receiver: str) -> Decimal:
+        return sum((v["paid"] for (_, r), v in self.cells.items() if r == receiver), ZERO)
+
+    def other_side_unnamed(self, payer: str, receiver: str) -> bool:
+        """One side of the pair is missing, but that company booked IC without naming the counterparty
+        (e.g. VIDE GmbH's receipts) - the amount may be there, it just cannot be attributed."""
+        v = self.cell(payer, receiver)
+        if v["paid"] and not v["received"]:
+            return bool(self.cell(UNSPEC, receiver)["received"])
+        if v["received"] and not v["paid"]:
+            return bool(self.cell(payer, UNSPEC)["paid"])
+        return False
+
+    def mismatches(self, tolerance: Decimal) -> list[dict]:
+        """Named pairs whose two sides differ by more than the tolerance. A missing side counts only when
+        that company booked no unattributed IC in that direction (else it is a 'not specified' case)."""
+        out = [{"payer": p, "receiver": r, "paid": v["paid"], "received": v["received"],
+                "diff": v["received"] - v["paid"], "assumed": (p, r) in self.assumed}
+               for (p, r), v in self.cells.items() if UNSPEC not in (p, r) and not self.other_side_unnamed(p, r)]
+        return sorted((m for m in out if abs(m["diff"]) > tolerance), key=lambda m: -abs(m["diff"]))
+
+    @property
+    def unspecified(self) -> tuple[Decimal, Decimal]:
+        """(paid without a named receiver, received without a named payer)."""
+        received = sum((v["received"] for (p, _), v in self.cells.items() if p == UNSPEC), ZERO)
+        return self.paid_to(UNSPEC), received
+
+
+def ic_matrix(c: Consolidation, wcs: list[str], gmbh_bu: str = GMBH_BU,
+              pair_partner: dict[str, str] | None = None) -> IcMatrix:
+    """Payer x receiver matrix from the companies' IC rows: 'IC (VIDE-GMBH)' names VIDE GmbH
+    (for VIDE GmbH itself the subsidiary is not named), partner rows name the partner,
+    'IC (other VI-group) – other / not specified' names nobody - unless the company has exactly one
+    partner in the pair list (`pair_partner`, the colour coding of the client's Excel): then that
+    partner is assumed and the cell is flagged in `assumed`."""
+    cells: dict[tuple[str, str], dict[str, Decimal]] = {}
+    assumed: set[tuple[str, str]] = set()
+    for x in c.companies:
+        me = x.business_unit
+        for (direction, cp), series in x.ic.items():
+            v = sum((series.get(w, ZERO) for w in wcs), ZERO)
+            if v == 0:
+                continue
+            guess = cp == OTHER and me != gmbh_bu and me in (pair_partner or {})
+            if cp == GMBH:
+                other = UNSPEC if me == gmbh_bu else gmbh_bu
+            elif cp == OTHER:
+                other = pair_partner[me] if guess else UNSPEC
+            else:
+                other = cp
+            payer, receiver, side = (me, other, "paid") if direction == "OUT" else (other, me, "received")
+            d = cells.setdefault((payer, receiver), {"paid": ZERO, "received": ZERO})
+            d[side] += v
+            if guess:
+                assumed.add((payer, receiver))
+    parties = sorted({p for key in cells for p in key if p != UNSPEC}, key=lambda b: (b != gmbh_bu, b))
+    return IcMatrix(parties, cells, assumed)
+
+
 def ic_pairs(c: Consolidation, wcs: list[str]) -> list[dict]:
     """Named partner pairs (rows 'IC from / to <partner>'): what A says it pays B vs what B says it receives."""
     by_bu = {x.business_unit: x for x in c.companies}

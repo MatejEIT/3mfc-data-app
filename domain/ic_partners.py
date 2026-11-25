@@ -34,6 +34,17 @@ def partners_of(entity_code: str) -> list[str]:
     return sorted(set(out))
 
 
+def single_partners(bu_by_entity: dict[str, str]) -> dict[str, str]:
+    """Company (CODE_BUSINESS_UNIT) -> its ONLY partner in IC_PARTNER_PAIRS. Used to attribute Excel
+    'IC (other VI-group)' amounts that name no counterparty; companies with 2+ partners are left out."""
+    out = {}
+    for entity, bu in bu_by_entity.items():
+        ps = [bu_by_entity[p] for p in partners_of(entity) if p in bu_by_entity]
+        if len(ps) == 1:
+            out[bu] = ps[0]
+    return out
+
+
 def partner_line_id(business_unit: str, direction: str, partner_bu: str) -> str:
     """Stable LINE_ID of the partner row ('IN' or 'OUT')."""
     return hashlib.sha256(f"{business_unit}|IC_PARTNER|{direction}|{partner_bu}".encode()).hexdigest()

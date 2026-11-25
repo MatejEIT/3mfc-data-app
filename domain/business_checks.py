@@ -11,6 +11,7 @@ Business checks (WARNING) – plausibility only; the entity may submit anyway wi
     W_ACTUALS_DEVIATION      average month-end cash differs > ±30 % from the last 6 closed months (IDL actuals)
     W_BELOW_MIN_CASH         lowest weekly cash of a month is below the company's minimum cash level − 10 %
                              (domain/min_cash.py); I_ABOVE_TARGET_CASH (INFO) when it stays above minimum + 20 %
+    W_IC_NO_PARTNER          IC on 'IC (other VI-group) – other / not specified' (no partner company named)
 
 Questions (INFO, code prefix Q_) – fixed reminders for specific companies, e.g. V004 factoring.
 """
@@ -81,6 +82,31 @@ def check_signs(bu: str, lines: list[Line], cells: dict[tuple[str, str], InputCe
         issues.append(Issue(Severity.WARNING, "W_NEGATIVE_INFLOW" if inflow else "W_NEGATIVE_OUTFLOW",
                             f"{what} '{label_of(ln)}' is negative in {len(neg)} week(s) – {hint}",
                             bu, neg[0][:6], neg[0], ln.line_id, ln.metric_code))
+    return issues
+
+
+def check_ic_partner(bu: str, lines: list[Line], cells: dict[tuple[str, str], InputCell],
+                     label_of=lambda ln: ln.label) -> list[Issue]:
+    """IC on 'IC (other VI-group) – other / not specified' names no partner company, so HQ cannot match it
+    with the other side (HQ report › Intercompany matrix). One warning per row."""
+    from domain.ic_partners import base_direction
+
+    issues = []
+    for ln in lines:
+        direction = base_direction(ln)
+        if direction is None:
+            continue
+        vals = sorted((w, c.amount) for (lid, w), c in cells.items()
+                      if lid == ln.line_id and c.state == ValueState.ENTERED and c.amount)
+        if not vals:
+            continue
+        total = sum((a for _, a in vals), Decimal(0))
+        what, row = ("received", "IC from <company>") if direction == "IN" else ("paid", "IC to <company>")
+        issues.append(Issue(Severity.WARNING, "W_IC_NO_PARTNER",
+                            f"IC {what} without a partner company: {_fmt_k(total)} in {len(vals)} week(s) on "
+                            f"'{label_of(ln)}' – enter it on the row of the partner company ('{row}' or "
+                            "＋ add IC partner) so HQ can match both sides",
+                            bu, vals[0][0][:6], vals[0][0], ln.line_id, ln.metric_code))
     return issues
 
 

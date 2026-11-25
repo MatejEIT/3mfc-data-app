@@ -137,6 +137,7 @@ class ForecastService:
 
         issues += BC.check_months_filled(bu, lines, cells, result.periods)
         issues += BC.check_signs(bu, lines, cells, label_of)
+        issues += BC.check_ic_partner(bu, lines, cells, label_of)
         issues += BC.entity_questions(bu)
         issues += BC.check_min_cash(bu, result, ordered_weeks(ws.calendar), ws.fx_rates, ws.currency,
                                     self.ref.min_cash_levels().get(bu[:4]))

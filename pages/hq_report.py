@@ -15,9 +15,10 @@ import streamlit as st
 from components import report_ui as U
 from components import theme as T
 from components.forecast_grid import period_label
-from domain.consolidation import (CONSO_ROWS, GMBH, GMBH_BU, IC_TOLERANCE_KEUR, Consolidation, bridge,
-                                  consolidate, ic_pairs, ic_reconciliation)
+from domain.consolidation import (CONSO_ROWS, GMBH_BU, IC_TOLERANCE_KEUR, Consolidation, bridge, consolidate,
+                                  ic_matrix, ic_reconciliation)
 from services.auth_service import AccessDenied
+from domain.ic_partners import single_partners
 from domain.min_cash import classify, group_level, level_of
 from services.bootstrap import get_context, remember_choice, require_user, restore_choice
 from services.report_service import CHECK, CRITICAL, INFO, Report, ReportService
@@ -410,43 +411,39 @@ with t_ic:
                "VI-group)” receipts vs payments of all subsidiaries.")
 
     st.write("")
-    st.markdown(U.card_head("Who books what", f"per company · {ic_pick} · kEUR · sorted by net IC", "grid"),
+    _ents = ctx.ref.entities()
+    mx = ic_matrix(c, ic_wcs, pair_partner=single_partners(dict(zip(_ents["CODE_ENTITY"], _ents["CODE_BUSINESS_UNIT"]))))
+    st.markdown(U.card_head("Who pays whom", f"payer ↓ × receiver → · {ic_pick} · kEUR", "grid"),
                 unsafe_allow_html=True)
-
-    def _ic(x, d: str, gmbh: bool) -> Decimal:
-        return sum((sum(v.get(w, Decimal(0)) for w in ic_wcs) for (dd, cp), v in x.flows.ic.items()
-                    if dd == d and ((cp == GMBH) == gmbh)), Decimal(0))
-
-    rows_ = []
-    for x in rep.consolidated:
-        vals = (_ic(x, "IN", True), _ic(x, "IN", False), _ic(x, "OUT", True), _ic(x, "OUT", False))
-        if any(vals):
-            rows_.append((x, vals, vals[0] + vals[1] - vals[2] - vals[3]))
-    body = []
-    for x, (in_g, in_o, out_g, out_o), net_ in sorted(rows_, key=lambda r: -abs(r[2])):
-        tag_ = (f' <span class="rp-st" style="color:{T.PRIMARY};background:#EEF5FF">VIDE GmbH</span>'
-                if x.business_unit == GMBH_BU else "")
-        body.append(f'<tr><td class="lbl"><b>{U.E(x.business_unit)}</b> <span style="color:{T.MUTED}">{U.E(x.name)}'
-                    f'</span>{tag_}</td>{U.num_cell(in_g)}{U.num_cell(in_o)}{U.num_cell(out_g)}{U.num_cell(out_o)}'
-                    f'{U.num_cell(net_)}</tr>')
-    if body:
-        st.markdown(U.table(['<tr><th class="lbl" rowspan="1">Company</th><th>Received ← GmbH</th>'
-                             '<th>Received ← other VI</th><th>Paid → GmbH</th><th>Paid → other VI</th>'
-                             '<th>Net (received − paid)</th></tr>'], body), unsafe_allow_html=True)
-    else:
+    if not mx.cells:
         st.markdown('<div class="rp-ok">✓ No intercompany payments in this period.</div>', unsafe_allow_html=True)
-
-    pairs = ic_pairs(c, ic_wcs)
-    if pairs:
+    else:
+        names = {x.business_unit: x.name for x in rep.consolidated}
+        st.markdown(U.ic_matrix_table(mx, names, limit), unsafe_allow_html=True)
+        un_paid, un_rec = mx.unspecified
+        if un_paid or un_rec:
+            st.caption(f"Not specified: {U.k(un_paid, False)} kEUR paid and {U.k(un_rec, False)} kEUR received "
+                       "without naming the other company and without a single partner in the pair list (VIDE GmbH’s "
+                       "own IC rows, companies with several partners). Dashed cells: partner assumed from the pair "
+                       "list of the Excel colour coding. Companies name the partner themselves with the rows "
+                       "“IC from / to …” in the Forecast Editor.")
+        bad = mx.mismatches(limit)
         st.write("")
-        st.markdown(U.card_head("Named partner pairs", "rows “IC from / to <partner>” · payer vs receiver", "flow"),
-                    unsafe_allow_html=True)
-        body = [f'<tr><td class="lbl"><b>{U.E(r["payer"])}</b> → <b>{U.E(r["receiver"])}</b></td>'
-                f'{U.num_cell(r["paid"])}{U.num_cell(r["received"])}{U.num_cell(r["diff"])}<td>{_pill(r["diff"])}</td></tr>'
-                for r in sorted(pairs, key=lambda r: -abs(r["diff"]))]
-        st.markdown(U.table(['<tr><th class="lbl">Payer → receiver</th><th>Paid (payer)</th>'
-                             '<th>Received (receiver)</th><th>Difference</th><th>Status</th></tr>'], body),
-                    unsafe_allow_html=True)
+        st.markdown(U.card_head("Pairs that do not match", f"named payer and receiver · beyond ±{limit:.0f} kEUR",
+                                "flow"), unsafe_allow_html=True)
+        if bad:
+            body = [f'<tr><td class="lbl"><b>{U.E(r["payer"])}</b> → <b>{U.E(r["receiver"])}</b> '
+                    f'<span style="color:{T.MUTED}">{U.E(names.get(r["payer"], ""))} → '
+                    f'{U.E(names.get(r["receiver"], ""))}</span>'
+                    + (' <span class="rp-st" style="color:#3E5C99;background:#EEF3FB">pair list</span>'
+                       if r["assumed"] else "") + '</td>'
+                    f'{U.num_cell(r["paid"])}{U.num_cell(r["received"])}{U.num_cell(r["diff"])}'
+                    f'<td>{_pill(r["diff"])}</td></tr>' for r in bad]
+            st.markdown(U.table(['<tr><th class="lbl">Payer → receiver</th><th>Paid (payer’s books)</th>'
+                                 '<th>Received (receiver’s books)</th><th>Difference</th><th>Status</th></tr>'],
+                                body), unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="rp-ok">✓ All named pairs match.</div>', unsafe_allow_html=True)
 
 with t_fx:
     st.caption(f"All companies of the group · FX {rep.fx_reference} · rate = 1 EUR in local currency.")

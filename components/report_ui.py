@@ -161,6 +161,21 @@ CSS = f"""
 .rp-t td.z {{ color:#C3CBD8; }}
 .rp-bar {{ display:inline-block; height:6px; border-radius:99px; vertical-align:middle; margin-left:8px; }}
 
+/* IC matrix (payer x receiver) */
+.rp-mx td.lbl {{ min-width:210px; }}
+.rp-mx th.pc {{ text-align:center; min-width:66px; }}
+.rp-mx td.c {{ text-align:center; min-width:66px; border-left:1px solid #F0F3F8; }}
+.rp-mx td.c small {{ display:block; font-size:10px; font-weight:550; opacity:.9; line-height:1.15; }}
+.rp-mx td.ok {{ background:#ECFDF3; color:#047857; font-weight:650; }}
+.rp-mx td.bad {{ background:#FEE2E2; color:#B91C1C; font-weight:750; }}
+.rp-mx td.one {{ background:#FFF4DE; color:#B45309; font-weight:650; }}
+.rp-mx td.un {{ background:#F4F6FA; color:#6B7A90; font-style:italic; }}
+.rp-mx td.self {{ background:repeating-linear-gradient(45deg,#F8FAFD,#F8FAFD 4px,#EEF2F7 4px,#EEF2F7 8px); }}
+.rp-mx td.c.z {{ color:#D5DBE5; }}
+.rp-mx td.c.as {{ outline:1.5px dashed #5B7BB5; outline-offset:-4px; }}
+.rp-legend {{ display:flex; flex-wrap:wrap; gap:14px; font-size:11.5px; color:{T.MUTED}; margin:8px 2px 2px; }}
+.rp-legend i {{ display:inline-block; width:12px; height:12px; border-radius:4px; vertical-align:-2px; margin-right:5px; }}
+
 /* entity tiles */
 .rp-tiles {{ display:grid; grid-template-columns:repeat(auto-fill, minmax(215px,1fr)); gap:10px; }}
 .rp-tile {{ border:1px solid #E3EAF5; border-radius:14px; padding:11px 13px; background:#fff; position:relative;
@@ -276,6 +291,73 @@ def num_cell(v, cls: str = "", red_negative: bool = True) -> str:
     txt = k(v)
     extra = " z" if txt == "–" else (" neg" if red_negative and v is not None and v < 0 else "")
     return f'<td class="{cls}{extra}">{txt}</td>'
+
+
+def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
+    """Payer (rows) x receiver (columns). Cell = amount the payer books; colour = does the receiver book
+    the same (green), a different amount (red), nothing (amber); grey = counterparty not specified."""
+    from domain.consolidation import UNSPEC
+
+    def label(b: str) -> str:
+        return "not specified" if b == UNSPEC else b
+
+    def cell(p: str, r: str) -> str:
+        html_ = _cell(p, r)
+        if (p, r) in m.assumed:
+            html_ = html_.replace('class="c ', 'class="c as ', 1).replace(
+                '" title="', '" title="Partner taken from the pair list (Excel colour coding), not named by the '
+                'company. ', 1)
+        return html_
+
+    def _cell(p: str, r: str) -> str:
+        if p == r:
+            return '<td class="c self"></td>'
+        v = m.cell(p, r)
+        tiny = min(Decimal("0.5"), tolerance)                 # shown as '–' -> treat as nothing booked
+        paid, rec = (x if abs(x) >= tiny else Decimal(0) for x in (v["paid"], v["received"]))
+        if not paid and not rec:
+            return '<td class="c z">·</td>'
+        tip = (f'{label(p)} → {label(r)}: paid {k(paid, False)} (books of {label(p)}), '
+               f'received {k(rec, False)} (books of {label(r)}), difference {k(rec - paid, False)} kEUR')
+        if UNSPEC in (p, r):
+            return f'<td class="c un" title="{E(tip)}">{k(paid or rec)}</td>'
+        if abs(rec - paid) <= tolerance:
+            return f'<td class="c ok" title="{E(tip)}">{k(paid)}</td>'
+        if m.other_side_unnamed(p, r):
+            who = r if not rec else p
+            return (f'<td class="c un" title="{E(tip)} – {E(who)} books IC without naming the counterparty">'
+                    f'{k(paid or rec)}<small>{E(who[:4])} does not name</small></td>')
+        if not paid or not rec:
+            side = "received only" if not paid else "paid only"
+            return f'<td class="c one" title="{E(tip)}">{k(paid or rec)}<small>{side}</small></td>'
+        return f'<td class="c bad" title="{E(tip)}">{k(paid)}<small>rec. {k(rec)}</small></td>'
+
+    cols = m.parties + ([UNSPEC] if any(r == UNSPEC for _, r in m.cells) else [])
+    rows = m.parties + ([UNSPEC] if any(p == UNSPEC for p, _ in m.cells) else [])
+    head = ('<tr><th class="lbl">Payer ↓ · receiver →</th>'
+            + "".join(f'<th class="pc" title="{E(names.get(b, ""))}">{E(b[:4] if b != UNSPEC else "not spec.")}</th>'
+                      for b in cols) + '<th>Σ paid</th></tr>')
+    body = []
+    for p in rows:
+        name = "receiver did not name the payer" if p == UNSPEC else names.get(p, "")
+        body.append(f'<tr><td class="lbl"><b>{E(label(p))}</b> <span style="color:{T.MUTED}">{E(name)}</span></td>'
+                    + "".join(cell(p, r) for r in cols)
+                    + (num_cell(m.paid_by(p), "t") if p != UNSPEC else '<td class="t z">–</td>') + "</tr>")
+    rec_ = [sum((m.cell(p, r)["received"] for p in rows), Decimal(0)) for r in cols]
+    paid_ = [m.paid_to(r) for r in cols]
+    body.append('<tr class="sum"><td class="lbl">Σ received (receiver’s books)</td>'
+                + "".join(num_cell(v) for v in rec_) + f'{num_cell(sum(rec_, Decimal(0)), "t")}</tr>')
+    body.append('<tr class="grand"><td class="lbl">Difference received − paid</td>'
+                + "".join(num_cell(a - b) for a, b in zip(rec_, paid_))
+                + num_cell(sum(rec_, Decimal(0)) - sum(paid_, Decimal(0))) + "</tr>")
+    legend = ('<div class="rp-legend"><span><i style="background:#ECFDF3;border:1px solid #A7E3C2"></i>both sides '
+              'agree</span><span><i style="background:#FEE2E2"></i>different amounts (paid / rec.)</span>'
+              '<span><i style="background:#FFF4DE"></i>only one side books it</span>'
+              '<span><i style="background:#F4F6FA"></i>counterparty not specified</span>'
+              '<span><i style="background:#fff;outline:1.5px dashed #5B7BB5;outline-offset:-2px"></i>partner from the '
+              'pair list (Excel colour coding)</span>'
+              '<span>hover a cell for both sides</span></div>')
+    return f'<div class="rp-mx">{table([head], body)}</div>{legend}'
 
 
 STATUS_STYLE = {

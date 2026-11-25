@@ -13,7 +13,8 @@ import streamlit as st
 from components import report_ui as U
 from components import theme as T
 from components.forecast_grid import period_label
-from domain.consolidation import IC_TOLERANCE_KEUR, ic_reconciliation
+from domain.consolidation import IC_TOLERANCE_KEUR, ic_matrix, ic_reconciliation
+from domain.ic_partners import single_partners
 from domain.min_cash import classify, group_level
 from domain.calendar import next_period, snapshot_periods
 from services.auth_service import AccessDenied
@@ -227,17 +228,15 @@ if view is not None:
                             f'{U.num_cell(ic_tot)}<td></td></tr>')
                 st.markdown(U.table(['<tr><th class="lbl">IC flow · 3 months</th><th>Received</th><th>Paid</th>'
                                      '<th>Difference</th><th>Status</th></tr>'], body), unsafe_allow_html=True)
-                nets = []
-                for x in rep.consolidated:
-                    n_ = sum((sum(v.values()) * (1 if d == "IN" else -1) for (d, _cp), v in x.flows.ic.items()),
-                             Decimal(0))
-                    if abs(n_) >= Decimal("0.5"):                # hide rounding noise (shown as 0 / −0)
-                        nets.append((x.business_unit, n_))
-                if nets:
-                    top = sorted(nets, key=lambda t: -abs(t[1]))[:5]
-                    st.caption("Largest net IC (received − paid) per company: "
-                               + " · ".join(f"**{bu_}** {U.k(v, False)}" for bu_, v in top)
-                               + " – full breakdown in **HQ report › Intercompany**.")
+                mx = ic_matrix(cons, [w.code_week_period for w in cons.weeks], pair_partner=single_partners(
+                    dict(zip(entities["CODE_ENTITY"], entities["CODE_BUSINESS_UNIT"]))))
+                bad = mx.mismatches(ic_limit)
+                un_paid, un_rec = mx.unspecified
+                st.caption(f"{len(bad)} named pair(s) do not match"
+                           + (": " + " · ".join(f"**{m['payer']} → {m['receiver']}** {U.k(m['diff'], False)}"
+                                                for m in bad[:4]) if bad else "")
+                           + f" · without a named counterparty: {U.k(un_paid, False)} paid / {U.k(un_rec, False)} "
+                             "received – payer × receiver matrix in **HQ report › Intercompany**.")
 
 # =========================================================================== 2. work area
 if view is not None:
