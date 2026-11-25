@@ -13,13 +13,13 @@ from components import theme as T
 E = html.escape
 
 
-def k(v, dash_zero: bool = True) -> str:
-    """Whole thousands with thin-space grouping and a true minus sign; '–' for ~0."""
+def k(v, dash_zero: bool = True, dec: int = 0) -> str:
+    """Thousands with thin-space grouping and a true minus sign; '–' for ~0 at the shown precision."""
     if v is None:
         return ""
-    if dash_zero and abs(v) < Decimal("0.5"):
+    if dash_zero and abs(v) < Decimal("0.5") / 10 ** dec:
         return "–"
-    s = f"{abs(v):,.0f}".replace(",", " ")
+    s = f"{abs(v):,.{dec}f}".replace(",", " ")
     return f"−{s}" if v < 0 else s
 
 
@@ -294,8 +294,8 @@ def table(head_rows: list[str], body_rows: list[str], height: int | None = None)
             f'<tbody>{"".join(body_rows)}</tbody></table></div>')
 
 
-def num_cell(v, cls: str = "", red_negative: bool = True) -> str:
-    txt = k(v)
+def num_cell(v, cls: str = "", red_negative: bool = True, dec: int = 0) -> str:
+    txt = k(v, dec=dec)
     extra = " z" if txt == "–" else (" neg" if red_negative and v is not None and v < 0 else "")
     return f'<td class="{cls}{extra}">{txt}</td>'
 
@@ -304,6 +304,9 @@ def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
     """Payer (rows) x receiver (columns). Cell = amount the payer books; colour = does the receiver book
     the same (green), a different amount (red), nothing (amber); grey = counterparty not specified."""
     from domain.consolidation import UNSPEC
+
+    def f(v, dash: bool = True) -> str:      # one decimal in the matrix
+        return k(v, dash, 1)
 
     def label(b: str) -> str:
         return "not specified" if b == UNSPEC else b
@@ -320,24 +323,24 @@ def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
         if p == r:
             return '<td class="c self"></td>'
         v = m.cell(p, r)
-        tiny = min(Decimal("0.5"), tolerance)                 # shown as '–' -> treat as nothing booked
+        tiny = min(Decimal("0.05"), tolerance)                # shown as '–' -> treat as nothing booked
         paid, rec = (x if abs(x) >= tiny else Decimal(0) for x in (v["paid"], v["received"]))
         if not paid and not rec:
             return '<td class="c z">·</td>'
-        tip = (f'{label(p)} → {label(r)}: paid {k(paid, False)} (books of {label(p)}), '
-               f'received {k(rec, False)} (books of {label(r)}), difference {k(rec - paid, False)} kEUR')
+        tip = (f'{label(p)} → {label(r)}: paid {f(paid, False)} (books of {label(p)}), '
+               f'received {f(rec, False)} (books of {label(r)}), difference {f(rec - paid, False)} kEUR')
         if UNSPEC in (p, r):
-            return f'<td class="c un" title="{E(tip)}">{k(paid or rec)}</td>'
+            return f'<td class="c un" title="{E(tip)}">{f(paid or rec)}</td>'
         if abs(rec - paid) <= tolerance:
-            return f'<td class="c ok" title="{E(tip)}">{k(paid)}</td>'
+            return f'<td class="c ok" title="{E(tip)}">{f(paid or rec)}</td>'
         if m.other_side_unnamed(p, r):
             who = r if not rec else p
             return (f'<td class="c un" title="{E(tip)} – {E(who)} books IC without naming the counterparty">'
-                    f'{k(paid or rec)}<small>not named</small></td>')
+                    f'{f(paid or rec)}<small>not named</small></td>')
         if not paid or not rec:
             side = "rec. only" if not paid else "paid only"
-            return f'<td class="c one" title="{E(tip)}">{k(paid or rec)}<small>{side}</small></td>'
-        return f'<td class="c bad" title="{E(tip)}">{k(paid)}<small>rec. {k(rec)}</small></td>'
+            return f'<td class="c one" title="{E(tip)}">{f(paid or rec)}<small>{side}</small></td>'
+        return f'<td class="c bad" title="{E(tip)}">{f(paid)}<small>rec. {f(rec)}</small></td>'
 
     cols = m.parties + ([UNSPEC] if any(r == UNSPEC for _, r in m.cells) else [])
     rows = m.parties + ([UNSPEC] if any(p == UNSPEC for p, _ in m.cells) else [])
@@ -350,14 +353,14 @@ def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
         body.append(f'<tr><td class="lbl" title="{E(label(p))} {E(name)}"><b>{E(label(p))}</b>'
                     f'<span class="nm">{E(name)}</span></td>'
                     + "".join(cell(p, r) for r in cols)
-                    + (num_cell(m.paid_by(p), "t") if p != UNSPEC else '<td class="t z">–</td>') + "</tr>")
+                    + (num_cell(m.paid_by(p), "t", dec=1) if p != UNSPEC else '<td class="t z">–</td>') + "</tr>")
     rec_ = [sum((m.cell(p, r)["received"] for p in rows), Decimal(0)) for r in cols]
     paid_ = [m.paid_to(r) for r in cols]
     body.append('<tr class="sum"><td class="lbl" title="Σ received, as booked by the receiver">Σ received</td>'
-                + "".join(num_cell(v) for v in rec_) + f'{num_cell(sum(rec_, Decimal(0)), "t")}</tr>')
+                + "".join(num_cell(v, dec=1) for v in rec_) + f'{num_cell(sum(rec_, Decimal(0)), "t", dec=1)}</tr>')
     body.append('<tr class="grand"><td class="lbl" title="Difference received − paid">Difference</td>'
-                + "".join(num_cell(a - b) for a, b in zip(rec_, paid_))
-                + num_cell(sum(rec_, Decimal(0)) - sum(paid_, Decimal(0))) + "</tr>")
+                + "".join(num_cell(a - b, dec=1) for a, b in zip(rec_, paid_))
+                + num_cell(sum(rec_, Decimal(0)) - sum(paid_, Decimal(0)), dec=1) + "</tr>")
     legend = ('<div class="rp-legend"><span><i style="background:#ECFDF3;border:1px solid #A7E3C2"></i>both sides '
               'agree</span><span><i style="background:#FEE2E2"></i>different amounts (paid / rec.)</span>'
               '<span><i style="background:#FFF4DE"></i>only one side books it</span>'
