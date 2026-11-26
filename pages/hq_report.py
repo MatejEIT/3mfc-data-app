@@ -34,9 +34,9 @@ except AccessDenied as exc:
 
 st.markdown(U.CSS, unsafe_allow_html=True)
 st.markdown(f"""<style>
-.st-key-rp_c1, .st-key-rp_c2, .st-key-rp_drill, .st-key-rp_cmp {{ position:relative; overflow:hidden; background:#fff; border:1px solid #E3EAF5;
+.st-key-rp_c1, .st-key-rp_c2 {{ position:relative; overflow:hidden; background:#fff; border:1px solid #E3EAF5;
   border-radius:18px; padding:16px 16px 4px; box-shadow:0 10px 30px -20px rgba(23,38,94,.35); }}
-.st-key-rp_c1:before, .st-key-rp_c2:before, .st-key-rp_drill:before, .st-key-rp_cmp:before {{ content:""; position:absolute; left:0; right:0; top:0; height:3px;
+.st-key-rp_c1:before, .st-key-rp_c2:before {{ content:""; position:absolute; left:0; right:0; top:0; height:3px;
   background:linear-gradient(90deg, #1E90FF, #1A4FA8 55%, #A78BFA); }}
 .st-key-rp_ctl {{ margin-bottom:6px; }}
 </style>""", unsafe_allow_html=True)
@@ -246,77 +246,100 @@ def _item_label(label: str) -> str:
 
 
 st.write("")
-with st.container(key="rp_drill"):
-    d_steps = [s for s, _ in steps if s in BRIDGE_KEYS]
-    dh1, dh2, dh3 = st.columns([3.2, 3, 1.4], vertical_alignment="bottom")
-    dh1.markdown(U.card_head("What drives the bridge", "largest items behind a bar of the cash bridge · kEUR",
-                             "bars"), unsafe_allow_html=True)
-    d_step = dh2.segmented_control("Bridge bar", d_steps, default=d_steps[0], key="rep_drill_step",
-                                   label_visibility="collapsed") or d_steps[0]
-    d_by = dh3.segmented_control("Group by", ["Item", "Company"], default="Item", key="rep_drill_by",
-                                 label_visibility="collapsed") or "Item"
-    items = bridge_drill(c, d_step)
-    step_total = dict(steps)[d_step]
-    if d_by == "Company":
-        agg: dict[str, dict] = {}
-        for r in items:
-            a = agg.setdefault(r["company"], {"company": r["company"], "n": 0,
-                                              "values": {p: Decimal(0) for p in [*c.periods, "TOTAL"]}})
-            a["n"] += 1
-            for p, v in r["values"].items():
-                a["values"][p] += v
-        items = sorted(agg.values(), key=lambda r: -abs(r["values"]["TOTAL"]))
-    top_n = 12
-    shown, rest = items[:top_n], items[top_n:]
-    co_names = {x.business_unit: x.name for x in rep.companies}
-    d_head = ('<tr><th class="lbl">' + ("Company" if d_by == "Company" else "Item (project / customer / line)")
-              + "</th>" + ("<th>Items</th>" if d_by == "Company" else
-                           '<th style="text-align:left">Company</th><th style="text-align:left">Category</th>')
-              + "".join(f'<th class="m">{period_label(p, True)}</th>' for p in c.periods)
-              + '<th class="t">Σ 3 months</th><th>Share</th></tr>')
-    d_body = []
-    for r in shown:
-        tot = r["values"]["TOTAL"]
-        share = f'{float(tot / step_total * 100):.0f} %' if step_total else ""
+co_names = {x.business_unit: x.name for x in rep.companies}
+drill_x = st.expander("What drives the bridge · largest items behind a bar of the cash bridge", key="rp_drill_x",
+                      icon=":material/bar_chart:", on_change="rerun")
+if drill_x.open:
+    with drill_x:
+        d_steps = [s for s, _ in steps if s in BRIDGE_KEYS]
+        dh2, dh3, _ = st.columns([3, 1.4, 3.2], vertical_alignment="bottom")
+        d_step = dh2.segmented_control("Bridge bar", d_steps, default=d_steps[0], key="rep_drill_step",
+                                       label_visibility="collapsed") or d_steps[0]
+        d_by = dh3.segmented_control("Group by", ["Item", "Company"], default="Item", key="rep_drill_by",
+                                     label_visibility="collapsed") or "Item"
+        items = bridge_drill(c, d_step)
+        step_total = dict(steps)[d_step]
         if d_by == "Company":
-            lead = (f'<td class="lbl"><b>{U.E(r["company"])}</b> <span style="color:{T.MUTED}">'
-                    f'{U.E(co_names.get(r["company"], ""))}</span></td><td>{r["n"]}</td>')
+            agg: dict[str, dict] = {}
+            for r in items:
+                a = agg.setdefault(r["company"], {"company": r["company"], "n": 0,
+                                                  "values": {p: Decimal(0) for p in [*c.periods, "TOTAL"]}})
+                a["n"] += 1
+                for p, v in r["values"].items():
+                    a["values"][p] += v
+            items = sorted(agg.values(), key=lambda r: -abs(r["values"]["TOTAL"]))
+        top_n = 12
+        shown, rest = items[:top_n], items[top_n:]
+        d_head = ('<tr><th class="lbl">' + ("Company" if d_by == "Company" else "Item (project / customer / line)")
+                  + "</th>" + ("<th>Items</th>" if d_by == "Company" else
+                               '<th style="text-align:left">Company</th><th style="text-align:left">Category</th>')
+                  + "".join(f'<th class="m">{period_label(p, True)}</th>' for p in c.periods)
+                  + '<th class="t">Σ 3 months</th><th>Share</th></tr>')
+        d_body = []
+        for r in shown:
+            tot = r["values"]["TOTAL"]
+            share = f'{float(tot / step_total * 100):.0f} %' if step_total else ""
+            if d_by == "Company":
+                lead = (f'<td class="lbl"><b>{U.E(r["company"])}</b> <span style="color:{T.MUTED}">'
+                        f'{U.E(co_names.get(r["company"], ""))}</span></td><td>{r["n"]}</td>')
+            else:
+                lead = (f'<td class="lbl" style="white-space:normal">{U.E(_item_label(r["label"]))}</td>'
+                        f'<td style="text-align:left"><b>{U.E(r["company"])}</b></td>'
+                        f'<td style="text-align:left;color:{T.MUTED}">{U.E(r["category"])}</td>')
+            d_body.append(f'<tr>{lead}' + "".join(U.num_cell(r["values"][p], "m") for p in c.periods)
+                          + f'{U.num_cell(tot, "t")}<td>{share}</td></tr>')
+        pad = "<td></td>" if d_by == "Company" else "<td></td><td></td>"
+        if rest:
+            rv = {p: sum((r["values"][p] for r in rest), Decimal(0)) for p in [*c.periods, "TOTAL"]}
+            d_body.append(f'<tr class="memo"><td class="lbl">All other {len(rest)} '
+                          f'{"companies" if d_by == "Company" else "items"}</td>{pad}'
+                          + "".join(U.num_cell(rv[p], "m") for p in c.periods) + f'{U.num_cell(rv["TOTAL"], "t")}'
+                          + (f'<td>{float(rv["TOTAL"] / step_total * 100):.0f} %</td>' if step_total else "<td></td>")
+                          + "</tr>")
+        tv = {p: sum((r["values"][p] for r in items), Decimal(0)) for p in [*c.periods, "TOTAL"]}
+        d_body.append(f'<tr class="total"><td class="lbl">{U.E(d_step)} (bridge bar)</td>{pad}'
+                      + "".join(U.num_cell(tv[p], "m") for p in c.periods) + f'{U.num_cell(tv["TOTAL"], "t")}'
+                      + "<td>100 %</td></tr>")
+        if items:
+            st.markdown(U.table([d_head], d_body), unsafe_allow_html=True)
+            st.caption("Items = the detail rows of the companies' forecasts (customer / project names as the companies "
+                       "typed them; “(no name)” = a template slot with a value but without a name). Outflows are negative. "
+                       "Intercompany is not part of the bridge.")
         else:
-            lead = (f'<td class="lbl" style="white-space:normal">{U.E(_item_label(r["label"]))}</td>'
-                    f'<td style="text-align:left"><b>{U.E(r["company"])}</b></td>'
-                    f'<td style="text-align:left;color:{T.MUTED}">{U.E(r["category"])}</td>')
-        d_body.append(f'<tr>{lead}' + "".join(U.num_cell(r["values"][p], "m") for p in c.periods)
-                      + f'{U.num_cell(tot, "t")}<td>{share}</td></tr>')
-    pad = "<td></td>" if d_by == "Company" else "<td></td><td></td>"
-    if rest:
-        rv = {p: sum((r["values"][p] for r in rest), Decimal(0)) for p in [*c.periods, "TOTAL"]}
-        d_body.append(f'<tr class="memo"><td class="lbl">All other {len(rest)} '
-                      f'{"companies" if d_by == "Company" else "items"}</td>{pad}'
-                      + "".join(U.num_cell(rv[p], "m") for p in c.periods) + f'{U.num_cell(rv["TOTAL"], "t")}'
-                      + (f'<td>{float(rv["TOTAL"] / step_total * 100):.0f} %</td>' if step_total else "<td></td>")
-                      + "</tr>")
-    tv = {p: sum((r["values"][p] for r in items), Decimal(0)) for p in [*c.periods, "TOTAL"]}
-    d_body.append(f'<tr class="total"><td class="lbl">{U.E(d_step)} (bridge bar)</td>{pad}'
-                  + "".join(U.num_cell(tv[p], "m") for p in c.periods) + f'{U.num_cell(tv["TOTAL"], "t")}'
-                  + "<td>100 %</td></tr>")
-    if items:
-        st.markdown(U.table([d_head], d_body), unsafe_allow_html=True)
-        st.caption("Items = the detail rows of the companies' forecasts (customer / project names as the companies "
-                   "typed them; “(no name)” = a template slot with a value but without a name). Outflows are negative. "
-                   "Intercompany is not part of the bridge.")
-    else:
-        st.markdown('<div class="rp-ok">No detail rows behind this bar.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="rp-ok">No detail rows behind this bar.</div>', unsafe_allow_html=True)
 
 # =========================================================================== comparison with the previous snapshot
 prev_snap = max((s for s in snapshots if s < snap), default=None)
+cmp_x = None
 if prev_snap:
-    st.write("")
-    with st.container(key="rp_cmp"):
+    cmp_x = st.expander(f"Change vs previous snapshot {prev_snap} · months both snapshots forecast",
+                        key="rp_cmp_x", icon=":material/compare_arrows:", on_change="rerun")
+if cmp_x is not None and cmp_x.open:
+    with cmp_x:
         prev_rep = load_report(prev_snap)
         pc = prev_rep.conso
         months_cmp, cmp_rows = compare(c, pc) if pc is not None else ([], [])
-        st.markdown(U.card_head(f"Change vs previous snapshot {prev_snap}",
-                                "months both snapshots forecast · group · kEUR", "flow"), unsafe_allow_html=True)
+        if pc is not None:
+            cmp_fig = go.Figure()
+            for cons_, name_, col_, dash_ in ((pc, f"Snapshot {prev_snap}", "#94A3B8", "dash"),
+                                              (c, f"Snapshot {snap}", T.PRIMARY, "solid")):
+                cmp_fig.add_trace(go.Scatter(
+                    x=[w.end for w in cons_.weeks], y=[float(cons_.weekly["closing"][w.code_week_period])
+                                                      for w in cons_.weeks],
+                    customdata=[f"{w.start:%d}–{w.end:%d %b}" for w in cons_.weeks], name=name_,
+                    mode="lines+markers", line=dict(color=col_, width=2, dash=dash_), marker=dict(size=7, color=col_),
+                    hovertemplate="%{customdata}<br><b>%{y:,.0f} kEUR</b><extra>" + name_ + "</extra>"))
+            for p in months_cmp:                                # shade the months both snapshots forecast
+                ws_ = [w for w in c.weeks if w.code_period_value == p]
+                cmp_fig.add_vrect(x0=ws_[0].start, x1=ws_[-1].end, fillcolor="#EEF5FF", opacity=.6, line_width=0,
+                                  layer="below")
+            cmp_fig.update_layout(height=260, margin=dict(l=4, r=4, t=30, b=4), plot_bgcolor="rgba(0,0,0,0)",
+                                  paper_bgcolor="rgba(0,0,0,0)", font=FONT, hoverlabel=HOVER, hovermode="x unified",
+                                  legend=dict(orientation="h", y=1.12, x=0, font=dict(size=12)),
+                                  yaxis=dict(gridcolor="#EEF2F7", tickformat=",.0f", zeroline=False),
+                                  xaxis=dict(showgrid=False, tickformat="%d %b", tickfont=dict(color=T.MUTED, size=11)))
+            st.caption("Weekly group closing balance of both snapshots · kEUR · shaded = months both forecast")
+            st.plotly_chart(cmp_fig, width="stretch", config={"displayModeBar": False})
         if not months_cmp:
             st.markdown(f'<div class="rp-ok">Snapshot {prev_snap} has no consolidated months in common with '
                         f'{snap}.</div>', unsafe_allow_html=True)
