@@ -15,8 +15,9 @@ import streamlit as st
 from components import report_ui as U
 from components import theme as T
 from components.forecast_grid import period_label
-from domain.consolidation import (CONSO_ROWS, GMBH_BU, IC_TOLERANCE_KEUR, Consolidation, bridge, consolidate,
-                                  ic_matrix, ic_reconciliation)
+from domain.consolidation import (BRIDGE_KEYS, CONSO_ROWS, GMBH_BU, IC_TOLERANCE_KEUR, Consolidation, bridge,
+                                  bridge_drill, compare, consolidate, ic_company_view, ic_matrix, ic_reconciliation)
+from domain.metrics import PLACEHOLDER_LABELS
 from services.auth_service import AccessDenied
 from domain.ic_partners import single_partners
 from domain.min_cash import classify, group_level, level_of
@@ -33,9 +34,9 @@ except AccessDenied as exc:
 
 st.markdown(U.CSS, unsafe_allow_html=True)
 st.markdown(f"""<style>
-.st-key-rp_c1, .st-key-rp_c2 {{ position:relative; overflow:hidden; background:#fff; border:1px solid #E3EAF5;
+.st-key-rp_c1, .st-key-rp_c2, .st-key-rp_drill, .st-key-rp_cmp {{ position:relative; overflow:hidden; background:#fff; border:1px solid #E3EAF5;
   border-radius:18px; padding:16px 16px 4px; box-shadow:0 10px 30px -20px rgba(23,38,94,.35); }}
-.st-key-rp_c1:before, .st-key-rp_c2:before {{ content:""; position:absolute; left:0; right:0; top:0; height:3px;
+.st-key-rp_c1:before, .st-key-rp_c2:before, .st-key-rp_drill:before, .st-key-rp_cmp:before {{ content:""; position:absolute; left:0; right:0; top:0; height:3px;
   background:linear-gradient(90deg, #1E90FF, #1A4FA8 55%, #A78BFA); }}
 .st-key-rp_ctl {{ margin-bottom:6px; }}
 </style>""", unsafe_allow_html=True)
@@ -148,13 +149,15 @@ ic_col = T.NEGATIVE if ic_worst > IC_TOLERANCE_KEUR else T.POSITIVE
 g_lv = group_level([x.business_unit for x in rep.consolidated], rep.min_cash)
 g_state = classify(low, g_lv)
 g_txt = f" · group min {U.k(g_lv.minimum, False)}" if g_lv else ""
+sum_co_close = sum((x.flows.month_closing.get(c.periods[-1]) or Decimal(0) for x in rep.consolidated), Decimal(0))
 cards = [
     U.kpi(f"Opening · {period_label(c.periods[0], True)}", U.k(opening, False),
           f"Σ companies · {c.weeks[0].start:%d}–{c.weeks[0].end:%d %b}", "wallet", T.PRIMARY, delay=0),
     U.kpi("Net cash movement", U.k(net, False), f"{delta} 3 months · excl. IC", "flow",
           T.POSITIVE if net >= 0 else T.NEGATIVE,
           extra=U.sparkline(cum, 68, 26, color="#7CC0FF"), delay=.05, dark=True),
-    U.kpi(f"Closing · {period_label(c.periods[-1], True)}", U.k(closing, False), "group · end of horizon", "flag",
+    U.kpi(f"Closing · {period_label(c.periods[-1], True)}", U.k(closing, False),
+          f"Σ companies {U.k(sum_co_close, False)}", "flag",
           T.DARK_NAVY, extra=U.sparkline(closing_series, 68, 26, color=T.DARK_NAVY), delay=.1),
     U.kpi("Lowest weekly cash", U.k(low, False),
           f"{low_w.start:%d}–{low_w.end:%d %b}{g_txt}{' · BELOW' if g_state == 'below' else ''}",
@@ -232,6 +235,120 @@ with g2.container(key="rp_c2"):
                                   range=[y0, y1]),
                        xaxis=dict(tickfont=dict(color=T.MUTED, size=10.5), tickangle=0, showgrid=False))
     st.plotly_chart(line, width="stretch", config={"displayModeBar": False})
+
+
+# =========================================================================== drill-through of the cash bridge
+def _item_label(label: str) -> str:
+    t = (label or "").strip()
+    if t.upper() == "OTHER":
+        return "Other (not itemised)"
+    return "(no name)" if t.lower() in PLACEHOLDER_LABELS else t
+
+
+st.write("")
+with st.container(key="rp_drill"):
+    d_steps = [s for s, _ in steps if s in BRIDGE_KEYS]
+    dh1, dh2, dh3 = st.columns([3.2, 3, 1.4], vertical_alignment="bottom")
+    dh1.markdown(U.card_head("What drives the bridge", "largest items behind a bar of the cash bridge · kEUR",
+                             "bars"), unsafe_allow_html=True)
+    d_step = dh2.segmented_control("Bridge bar", d_steps, default=d_steps[0], key="rep_drill_step",
+                                   label_visibility="collapsed") or d_steps[0]
+    d_by = dh3.segmented_control("Group by", ["Item", "Company"], default="Item", key="rep_drill_by",
+                                 label_visibility="collapsed") or "Item"
+    items = bridge_drill(c, d_step)
+    step_total = dict(steps)[d_step]
+    if d_by == "Company":
+        agg: dict[str, dict] = {}
+        for r in items:
+            a = agg.setdefault(r["company"], {"company": r["company"], "n": 0,
+                                              "values": {p: Decimal(0) for p in [*c.periods, "TOTAL"]}})
+            a["n"] += 1
+            for p, v in r["values"].items():
+                a["values"][p] += v
+        items = sorted(agg.values(), key=lambda r: -abs(r["values"]["TOTAL"]))
+    top_n = 12
+    shown, rest = items[:top_n], items[top_n:]
+    co_names = {x.business_unit: x.name for x in rep.companies}
+    d_head = ('<tr><th class="lbl">' + ("Company" if d_by == "Company" else "Item (project / customer / line)")
+              + "</th>" + ("<th>Items</th>" if d_by == "Company" else
+                           '<th style="text-align:left">Company</th><th style="text-align:left">Category</th>')
+              + "".join(f'<th class="m">{period_label(p, True)}</th>' for p in c.periods)
+              + '<th class="t">Σ 3 months</th><th>Share</th></tr>')
+    d_body = []
+    for r in shown:
+        tot = r["values"]["TOTAL"]
+        share = f'{float(tot / step_total * 100):.0f} %' if step_total else ""
+        if d_by == "Company":
+            lead = (f'<td class="lbl"><b>{U.E(r["company"])}</b> <span style="color:{T.MUTED}">'
+                    f'{U.E(co_names.get(r["company"], ""))}</span></td><td>{r["n"]}</td>')
+        else:
+            lead = (f'<td class="lbl" style="white-space:normal">{U.E(_item_label(r["label"]))}</td>'
+                    f'<td style="text-align:left"><b>{U.E(r["company"])}</b></td>'
+                    f'<td style="text-align:left;color:{T.MUTED}">{U.E(r["category"])}</td>')
+        d_body.append(f'<tr>{lead}' + "".join(U.num_cell(r["values"][p], "m") for p in c.periods)
+                      + f'{U.num_cell(tot, "t")}<td>{share}</td></tr>')
+    pad = "<td></td>" if d_by == "Company" else "<td></td><td></td>"
+    if rest:
+        rv = {p: sum((r["values"][p] for r in rest), Decimal(0)) for p in [*c.periods, "TOTAL"]}
+        d_body.append(f'<tr class="memo"><td class="lbl">All other {len(rest)} '
+                      f'{"companies" if d_by == "Company" else "items"}</td>{pad}'
+                      + "".join(U.num_cell(rv[p], "m") for p in c.periods) + f'{U.num_cell(rv["TOTAL"], "t")}'
+                      + (f'<td>{float(rv["TOTAL"] / step_total * 100):.0f} %</td>' if step_total else "<td></td>")
+                      + "</tr>")
+    tv = {p: sum((r["values"][p] for r in items), Decimal(0)) for p in [*c.periods, "TOTAL"]}
+    d_body.append(f'<tr class="total"><td class="lbl">{U.E(d_step)} (bridge bar)</td>{pad}'
+                  + "".join(U.num_cell(tv[p], "m") for p in c.periods) + f'{U.num_cell(tv["TOTAL"], "t")}'
+                  + "<td>100 %</td></tr>")
+    if items:
+        st.markdown(U.table([d_head], d_body), unsafe_allow_html=True)
+        st.caption("Items = the detail rows of the companies' forecasts (customer / project names as the companies "
+                   "typed them; “(no name)” = a template slot with a value but without a name). Outflows are negative. "
+                   "Intercompany is not part of the bridge.")
+    else:
+        st.markdown('<div class="rp-ok">No detail rows behind this bar.</div>', unsafe_allow_html=True)
+
+# =========================================================================== comparison with the previous snapshot
+prev_snap = max((s for s in snapshots if s < snap), default=None)
+if prev_snap:
+    st.write("")
+    with st.container(key="rp_cmp"):
+        prev_rep = load_report(prev_snap)
+        pc = prev_rep.conso
+        months_cmp, cmp_rows = compare(c, pc) if pc is not None else ([], [])
+        st.markdown(U.card_head(f"Change vs previous snapshot {prev_snap}",
+                                "months both snapshots forecast · group · kEUR", "flow"), unsafe_allow_html=True)
+        if not months_cmp:
+            st.markdown(f'<div class="rp-ok">Snapshot {prev_snap} has no consolidated months in common with '
+                        f'{snap}.</div>', unsafe_allow_html=True)
+        else:
+            h1_ = ('<tr><th class="lbl">kEUR</th>' + "".join(f'<th class="mh" colspan="3">{period_label(p)}</th>'
+                                                         for p in months_cmp) + "</tr>")
+            h2_ = ('<tr><th class="lbl"></th>' + "".join(f'<th>{snap}</th><th>{prev_snap}</th><th class="m">Change</th>'
+                                                        for _ in months_cmp) + "</tr>")
+            b_ = []
+            for r in cmp_rows:
+                cls = "total" if r["key"] in ("net", "closing") else ""
+                b_.append(f'<tr class="{cls}"><td class="lbl">{U.E(r["label"])}</td>' + "".join(
+                    U.num_cell(r["values"][p]["cur"]) + U.num_cell(r["values"][p]["prev"])
+                    + U.num_cell(r["values"][p]["diff"], "m") for p in months_cmp) + "</tr>")
+            st.markdown(U.table([h1_, h2_], b_), unsafe_allow_html=True)
+            last_m = months_cmp[-1]
+            prev_by = {x.business_unit: x for x in prev_rep.consolidated}
+            moves = []
+            for x in rep.consolidated:
+                a = x.flows.month_closing.get(last_m)
+                y = prev_by.get(x.business_unit)
+                b = y.flows.month_closing.get(last_m) if y else None
+                if a is not None and b is not None and abs(a - b) >= Decimal("0.5"):
+                    moves.append((a - b, x.business_unit, a, b))
+            moves.sort(key=lambda t: -abs(t[0]))
+            if moves:
+                st.caption(f"Biggest changes in company closing {period_label(last_m, True)}: " + " · ".join(
+                    f"**{bu_}** {'+' if d_ >= 0 else '−'}{U.k(abs(d_), False)} ({U.k(b_v, False)} → {U.k(a_v, False)})"
+                    for d_, bu_, a_v, b_v in moves[:6]))
+            st.caption(f"Previous snapshot = {prev_snap} ({prev_rep.status}, FX {prev_rep.fx_reference or '–'}); "
+                       f"current = {snap} (FX {rep.fx_reference or '–'}). Changes include the different FX rate of "
+                       "each snapshot and the companies consolidated in each.")
 
 
 # =========================================================================== table renderer
@@ -350,7 +467,7 @@ with t_comp:
             + "".join(f'<th class="m">{period_label(p, True)}</th>' for p in c.periods)
             + '<th>Lowest week</th><th>Min cash</th><th>vs minimum</th><th>IC net</th></tr>')
     body = []
-    for x in sorted(ok, key=lambda r: -(r.flows.month_closing.get(last) or 0)):
+    for x in sorted(ok, key=lambda r: r.business_unit):
         f = x.flows
         series = [float(f.closing[w] or 0) for w in wk]
         lc = f.month_closing.get(last) or Decimal(0)
@@ -444,6 +561,44 @@ with t_ic:
                                 body), unsafe_allow_html=True)
         else:
             st.markdown('<div class="rp-ok">✓ All named pairs match.</div>', unsafe_allow_html=True)
+
+    # ---- IC cash by company (Excel "IC Cash nach Gesellschaft"): one company vs the partners' books
+    st.write("")
+    co_list = sorted(x.business_unit for x in rep.consolidated)
+    i1, _ = st.columns([2.2, 4])
+    ic_bu = i1.selectbox("Company", co_list, index=co_list.index(GMBH_BU) if GMBH_BU in co_list else 0,
+                         format_func=lambda b: f"{b} · {co_names.get(b, '')}", key="rep_ic_bu")
+    st.markdown(U.card_head(f"{ic_bu} · IC cash by company", "as the partners book it vs the company’s own "
+                            "forecast · all months · kEUR", "link"), unsafe_allow_html=True)
+    icv = ic_company_view(c, ic_bu, single_partners(dict(zip(_ents["CODE_ENTITY"], _ents["CODE_BUSINESS_UNIT"]))))
+    short = ic_bu[:4]
+    ih1 = '<tr><th class="lbl">Company</th>' + "".join(f'<th class="mh" colspan="2">{period_label(p)}</th>'
+                                                       for p in c.periods) + "</tr>"
+    ih2 = '<tr><th class="lbl"></th>' + "".join(f'<th>Inflow {short}</th><th>Outflow {short}</th>'
+                                               for _ in c.periods) + "</tr>"
+    ib = []
+    for other, per in icv["rows"].items():
+        ib.append(f'<tr><td class="lbl"><b>{U.E(other)}</b> <span style="color:{T.MUTED}">'
+                  f'{U.E(co_names.get(other, ""))}</span></td>'
+                  + "".join(U.num_cell(per[p]["in"]) + U.num_cell(per[p]["out"]) for p in c.periods) + "</tr>")
+    brk = {p: {d: sum((per[p][d] for per in icv["rows"].values()), Decimal(0)) for d in ("in", "out")}
+           for p in c.periods}
+    own = icv["own"]
+    ib.append('<tr class="total"><td class="lbl">Sum breakdown (partners’ books)</td>'
+              + "".join(U.num_cell(brk[p]["in"]) + U.num_cell(brk[p]["out"]) for p in c.periods) + "</tr>")
+    ib.append(f'<tr class="sum"><td class="lbl">Per FC {U.E(short)} (own forecast)</td>'
+              + "".join(U.num_cell(own[p]["in"]) + U.num_cell(own[p]["out"]) for p in c.periods) + "</tr>")
+    ib.append('<tr class="check"><td class="lbl">Difference to source</td>'
+              + "".join(U.num_cell(brk[p]["in"] - own[p]["in"]) + U.num_cell(brk[p]["out"] - own[p]["out"])
+                        for p in c.periods) + "</tr>")
+    ib.append(f'<tr class="grand"><td class="lbl">Net {U.E(short)} (in − out, own forecast)</td>'
+              + "".join(f'<td colspan="2">{U.k(own[p]["in"] - own[p]["out"], dec=1)}</td>' for p in c.periods)
+              + "</tr>")
+    st.markdown(U.table([ih1, ih2], ib), unsafe_allow_html=True)
+    st.caption(f"Rows: what each partner books with {ic_bu} – inflow = the partner’s payment to {short}, outflow = "
+               f"the partner’s receipt from {short}. “Per FC” = the IC rows of {short}’s own forecast. A difference "
+               "means the two sides do not agree – or the partner did not name the counterparty (e.g. VIDE GmbH "
+               "does not name the subsidiary; IC to “other VI-group” is assigned only via the pair list).")
 
 with t_fx:
     st.caption(f"All companies of the group · FX {rep.fx_reference} · rate = 1 EUR in local currency.")

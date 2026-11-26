@@ -204,3 +204,42 @@ def test_ic_matrix_uses_the_pair_list_for_unnamed_other_vi_group():
     assert C.ic_matrix(c, wcs).cell("V002US", C.UNSPEC)["paid"] == D("0.04")   # without the list: unnamed
     from components.report_ui import ic_matrix_table
     assert 'class="c as ok"' in ic_matrix_table(m, {}, D("0.005"))
+
+
+def test_bridge_drill_lists_detail_lines_behind_a_bar():
+    import domain.consolidation as C
+    a = _flows("A", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000, ("L_AR_NOT_OVERDUE_DETAIL", "202610_W1"): 500,
+                     ("L_AR_NOT_OVERDUE_DETAIL", "202611_W1"): 100, ("L_TAXES", "202610_W2"): 200,
+                     ("L_IC_OTHER_IN", "202610_W1"): 300}, 1)
+    b = _flows("B", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000, ("L_AR_NOT_OVERDUE_DETAIL", "202610_W1"): 900}, 1)
+    c = consolidate([a, b], WEEKS)
+    rows = C.bridge_drill(c, "Inflows")
+    assert [r["company"] for r in rows] == ["B", "A"]                 # largest first, IC receipt not included
+    assert rows[1]["values"]["202610"] == D("0.5") and rows[1]["values"]["TOTAL"] == D("0.6")
+    assert sum(r["values"]["TOTAL"] for r in rows) == dict(bridge(c))["Inflows"]
+    out = C.bridge_drill(c, "Personnel & other")
+    assert out[0]["values"]["TOTAL"] == D("-0.2") and out[0]["category"] == "Taxes"
+
+
+def test_compare_with_previous_snapshot_on_common_months():
+    import domain.consolidation as C
+    cur = consolidate([_flows("A", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                                    ("L_AR_NOT_OVERDUE_DETAIL", "202610_W1"): 500}, 1)], WEEKS)
+    prev = consolidate([_flows("A", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                                     ("L_AR_NOT_OVERDUE_DETAIL", "202610_W1"): 200}, 1)], WEEKS)
+    prev.periods = ["202609", "202610"]                               # only October in common
+    months, rows = C.compare(cur, prev)
+    assert months == ["202610"]
+    r = {x["key"]: x for x in rows}
+    assert r["total_in"]["values"]["202610"] == {"cur": D("0.5"), "prev": D("0.2"), "diff": D("0.3")}
+    assert "borrowing" not in r and r["closing"]["values"]["202610"]["diff"] == D("0.3")
+
+
+def test_ic_company_view_reads_the_partners_books():
+    import domain.consolidation as C
+    g = _flows("V001DE", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000, ("L_IC_OTHER_IN", "202610_W1"): 300}, 1)
+    a = _flows("A", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000,
+                     ("L_INTERCOMPANY_GMBH_OUTFLOW", "202610_W1"): 200}, 1)
+    v = C.ic_company_view(consolidate([g, a], WEEKS), "V001DE")
+    assert v["rows"]["A"]["202610"] == {"in": D("0.2"), "out": D(0)}  # A says it pays GmbH 200
+    assert v["own"]["202610"] == {"in": D("0.3"), "out": D(0)}         # GmbH's own forecast: 300 received

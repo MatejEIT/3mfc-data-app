@@ -185,7 +185,7 @@ if view is not None:
                     f'<th>Closing {period_label(cons.periods[-1], True)}</th><th>Change</th><th>Lowest week</th>'
                     '<th>Min cash</th><th>vs minimum (−10 % / +20 %)</th></tr>')
             body = []
-            rows = sorted(rep.consolidated, key=lambda x: -(x.flows.closing.get(wks[-1]) or 0))
+            rows = sorted(rep.consolidated, key=lambda x: x.business_unit)
             for x in rows:
                 f = x.flows
                 ser = [float(f.closing[w] or 0) for w in wks]
@@ -243,7 +243,7 @@ if view is not None:
     with st.container(key="work_area"):
         T.block_title(f"Companies · snapshot {snap}",
                       "Click a company to open it in Forecast Editor and adjust it – every HQ change is recorded.")
-        table = view.sort_values(["Status", "CODE_BUSINESS_UNIT"])[
+        table = view.sort_values("CODE_BUSINESS_UNIT")[
             ["CODE_BUSINESS_UNIT", "NAME_ENTITY", "CODE_REGION", "Status", "SUBMITTED_BY", "SUBMITTED_AT_UTC",
              "HQ adjusted", "UPDATED_AT_UTC"]].rename(columns={
                  "CODE_BUSINESS_UNIT": "Company", "NAME_ENTITY": "Name", "CODE_REGION": "Region",

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from domain.calc import ForecastResult
-from domain.models import Line, WeekPeriod
+from domain.models import Line, RowType, WeekPeriod
 
 ZERO = Decimal(0)
 IC_TOLERANCE_KEUR = Decimal(10)
@@ -89,10 +89,26 @@ class CompanyFlows:
     has_values: bool = True
     # IC by (direction IN/OUT, counterparty GMBH / partner BU / OTHER) -> week -> kEUR
     ic: dict[tuple[str, str], dict[str, Decimal]] = field(default_factory=dict)
+    # detail lines (projects / customers / cost lines) with values: (flow key, label, week -> kEUR); IC excluded
+    details: list[tuple[str, str, dict[str, Decimal]]] = field(default_factory=list)
+
+
+# detail metric -> FLOW key (drill-through of the cash bridge)
+DETAIL_KEY = {"AR_NOT_OVERDUE_DETAIL": "ar_not_overdue", "AR_OVERDUE_DETAIL": "ar_overdue",
+              "NEW_INVOICE_DETAIL": "new_invoices", OTHER_IN_METRIC: "other_in", "MATERIAL_EXPENSES": "material",
+              "LOCAL_PURCHASING": "local_purchasing", "PROJECT_EXPENSE_DETAIL": "project",
+              "OTHER_PROJECT_EXPENSES": "project", "EMPLOYMENT": "employment", "INVESTMENTS": "investments",
+              "TAXES": "taxes", "OTHER_EXPENSES": "other_exp", "BANK_FINANCING_MOVEMENT": "borrowing"}
+# cash-bridge step -> FLOW keys it sums (sign: +1 inflow, -1 outflow)
+BRIDGE_KEYS = {"Inflows": (["ar_not_overdue", "ar_overdue", "new_invoices", "other_in"], 1),
+               "Material & projects": (["material", "local_purchasing", "project"], -1),
+               "Personnel & other": (["employment", "investments", "taxes", "other_exp"], -1),
+               "Financing": (["borrowing"], 1)}
+KEY_LABEL = {k: lbl for k, lbl, _ in CONSO_ROWS}
 
 
 def company_flows(bu: str, lines: list[Line], weeks: list[WeekPeriod], result: ForecastResult,
-                  rate: Decimal) -> CompanyFlows:
+                  rate: Decimal, labels: dict[str, str] | None = None) -> CompanyFlows:
     k = Decimal(1000) * rate
     weekly: dict[str, dict[str, Decimal]] = {key: {} for key in FLOW_KEYS}
     ic_in_lines = [ln.line_id for ln in lines if ln.metric_code == OTHER_IN_METRIC and ln.source_row in IC_IN_ROWS]
@@ -130,7 +146,15 @@ def company_flows(bu: str, lines: list[Line], weeks: list[WeekPeriod], result: F
     months = sorted({w.code_period_value for w in weeks})
     month_closing = {p: conv(result.metric_monthly.get(("CLOSING_CASH_BALANCE", p))) for p in months}
     any_value = any_value or any(v not in (None, ZERO) for v in opening.values())
-    return CompanyFlows(bu, rate, weekly, opening, closing, month_closing, any_value, ic)
+    details = []
+    for ln in lines:
+        key = DETAIL_KEY.get(ln.metric_code)
+        if key is None or ln.row_type != RowType.DETAIL or (key == "other_in" and ln.source_row in IC_IN_ROWS):
+            continue
+        series = {w.code_week_period: _v(result.line_weekly.get((ln.line_id, w.code_week_period))) / k for w in weeks}
+        if any(series.values()):
+            details.append((key, (labels or {}).get(ln.line_id) or ln.label, series))
+    return CompanyFlows(bu, rate, weekly, opening, closing, month_closing, any_value, ic, details)
 
 
 @dataclass
@@ -337,3 +361,61 @@ def ic_pairs(c: Consolidation, wcs: list[str]) -> list[dict]:
         if paid or received:
             out.append({"payer": a, "receiver": b, "paid": paid, "received": received, "diff": received - paid})
     return out
+
+
+# ------------------------------------------------------------------ drill-through & snapshot comparison
+def bridge_drill(c: Consolidation, step: str) -> list[dict]:
+    """Detail lines behind one cash-bridge step, largest first: company, category, label,
+    kEUR per period and TOTAL (sign as in the bridge: outflows negative)."""
+    keys, sign = BRIDGE_KEYS[step]
+    out = []
+    for x in c.companies:
+        for key, label, series in x.details:
+            if key not in keys:
+                continue
+            row = {"company": x.business_unit, "key": key, "category": KEY_LABEL.get(key, key), "label": label,
+                   "values": {p: sign * sum((series.get(w.code_week_period, ZERO) for w in c.weeks
+                                             if w.code_period_value == p), ZERO) for p in c.periods}}
+            row["values"]["TOTAL"] = sum(row["values"].values(), ZERO)
+            if row["values"]["TOTAL"] or any(row["values"].values()):
+                out.append(row)
+    return sorted(out, key=lambda r: -abs(r["values"]["TOTAL"]))
+
+
+COMPARE_ROWS = [("opening", "Opening cash balance"), ("total_in", "Total cash inflow"),
+                ("total_out", "Total cash outflow"), ("borrowing", "Borrowing / repayment"),
+                ("net", "Net cash movement"), ("closing", "Closing cash balance")]
+
+
+def compare(cur: Consolidation, prev: Consolidation) -> tuple[list[str], list[dict]]:
+    """Months both snapshots forecast and the key group lines of each: current, previous, change (kEUR)."""
+    months = [p for p in cur.periods if p in prev.periods]
+    rows = []
+    for key, label in COMPARE_ROWS:
+        vals = {p: (cur.monthly[key][p], prev.monthly[key][p]) for p in months}
+        if key == "borrowing" and not any(a or b for a, b in vals.values()):
+            continue
+        rows.append({"key": key, "label": label,
+                     "values": {p: {"cur": a, "prev": b, "diff": a - b} for p, (a, b) in vals.items()}})
+    return months, rows
+
+
+def ic_company_view(c: Consolidation, bu: str, pair_partner: dict[str, str] | None = None,
+                    gmbh_bu: str = GMBH_BU) -> dict:
+    """IC of one company by partner and month, as the partners book it (Excel 'IC Cash nach Gesellschaft'):
+    rows[partner][period] = {"in": what the partner pays to `bu`, "out": what the partner receives from `bu`},
+    own[period] = {"in", "out"}: the company's own IC totals (all its IC rows)."""
+    me = next((x for x in c.companies if x.business_unit == bu), None)
+    rows: dict[str, dict[str, dict[str, Decimal]]] = {}
+    own: dict[str, dict[str, Decimal]] = {}
+    for p in c.periods:
+        wcs = [w.code_week_period for w in c.weeks if w.code_period_value == p]
+        m = ic_matrix(c, wcs, gmbh_bu, pair_partner)
+        for x in c.companies:
+            other = x.business_unit
+            if other == bu:
+                continue
+            rows.setdefault(other, {})[p] = {"in": m.cell(other, bu)["paid"], "out": m.cell(bu, other)["received"]}
+        own[p] = {"in": _ic_sum(me, "IN", None, wcs) if me else ZERO,
+                  "out": _ic_sum(me, "OUT", None, wcs) if me else ZERO}
+    return {"rows": dict(sorted(rows.items())), "own": own}

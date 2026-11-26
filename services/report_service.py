@@ -117,7 +117,7 @@ class ReportService:
                 continue
             lines = with_added_partners(bu, self.ref.lines(bu), st.labels, names)
             result = calculate(lines, calendar, st.cells)
-            cf = company_flows(bu, lines, weeks, result, rate)
+            cf = company_flows(bu, lines, weeks, result, rate, st.labels)
             row.flows = cf
             if not cf.has_values:
                 row.status = "No values"
