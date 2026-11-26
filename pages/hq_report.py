@@ -49,9 +49,9 @@ ASSUMPTIONS = [
     "Intercompany: IC receipts (template rows 64/65) and IC payments (88/89) are not in Total Cash Inflow / Outflow; "
     "Check (= 0) = Σ IC inflow − Σ IC outflow, tolerance ±10 kEUR per month.",
     "Net Cash Movement = Total Cash Inflow − Total Cash Outflow + Borrowing (+) / repayment (−).",
-    "Balances: first week of a month = Σ companies' opening balances; following weeks = previous group closing; "
-    "Closing = Opening + Net. Month column: opening of the first week, closing of the last week.",
-    "Company closing (per-company view) includes IC; the sum therefore differs from the group closing by IC differences.",
+    "Balances = plain sum of the companies' balances incl. IC (client decision 2026-11-26): opening / closing of "
+    "every week = Σ companies. IC that does not net to zero is shown as “IC mismatch (not eliminated)”: "
+    "Closing = Opening + Net + IC mismatch. Month column: opening of the first week, closing of the last week.",
     "Companies marked “no delivery expected” (V013, V014) are listed but not reported as missing.",
     "Empty is not zero: optional empty lines count as 0 in sums; companies without any values are listed, not summed.",
 ]
@@ -119,7 +119,7 @@ if c is not None:
              f'<div class="chg">{"▲" if _chg >= 0 else "▼"} {U.k(abs(_chg), False)} vs opening</div>'
              f'{U.sparkline(_cl, 190, 42, "#7CC0FF", "")}</div>')
 st.markdown(U.hero(f"HQ report · snapshot {rep.snapshot}", "Group cash flow forecast",
-                   f"{p_from.split()[0]} – {p_to}  ·  kEUR  ·  structure of Excel “FC CONSO”, intercompany eliminated",
+                   f"{p_from.split()[0]} – {p_to}  ·  kEUR  ·  structure of Excel “FC CONSO” · IC out of flows, balances = Σ companies",
                    tags, right), unsafe_allow_html=True)
 
 if c is None:
@@ -149,7 +149,6 @@ ic_col = T.NEGATIVE if ic_worst > IC_TOLERANCE_KEUR else T.POSITIVE
 g_lv = group_level([x.business_unit for x in rep.consolidated], rep.min_cash)
 g_state = classify(low, g_lv)
 g_txt = f" · group min {U.k(g_lv.minimum, False)}" if g_lv else ""
-sum_co_close = sum((x.flows.month_closing.get(c.periods[-1]) or Decimal(0) for x in rep.consolidated), Decimal(0))
 cards = [
     U.kpi(f"Opening · {period_label(c.periods[0], True)}", U.k(opening, False),
           f"Σ companies · {c.weeks[0].start:%d}–{c.weeks[0].end:%d %b}", "wallet", T.PRIMARY, delay=0),
@@ -157,7 +156,7 @@ cards = [
           T.POSITIVE if net >= 0 else T.NEGATIVE,
           extra=U.sparkline(cum, 68, 26, color="#7CC0FF"), delay=.05, dark=True),
     U.kpi(f"Closing · {period_label(c.periods[-1], True)}", U.k(closing, False),
-          f"Σ companies {U.k(sum_co_close, False)}", "flag",
+          f"Σ companies · IC mismatch {U.k(c.monthly['ic_bal']['TOTAL'], False)}", "flag",
           T.DARK_NAVY, extra=U.sparkline(closing_series, 68, 26, color=T.DARK_NAVY), delay=.1),
     U.kpi("Lowest weekly cash", U.k(low, False),
           f"{low_w.start:%d}–{low_w.end:%d %b}{g_txt}{' · BELOW' if g_state == 'below' else ''}",
@@ -184,10 +183,10 @@ HOVER = dict(bgcolor="#0B1640", bordercolor="#0B1640", font=dict(color="#fff", s
 g1, g2 = st.columns([1, 1.15])
 with g1.container(key="rp_c1"):
     steps = bridge(c)
-    st.markdown(U.card_head("Cash bridge", "3 months · kEUR · * month transitions = IC mismatches", "bars"),
+    st.markdown(U.card_head("Cash bridge", "3 months · kEUR · IC mismatches = IC one side books but the other not", "bars"),
                 unsafe_allow_html=True)
     fig = go.Figure(go.Waterfall(
-        x=[s.replace(" & ", " &<br>").replace("Month transitions*", "Month<br>transitions*") for s, _ in steps],
+        x=[s.replace(" & ", " &<br>").replace("IC mismatches", "IC<br>mismatches") for s, _ in steps],
         y=[float(v) for _, v in steps],
         measure=["absolute"] + ["relative"] * (len(steps) - 2) + ["total"],
         text=[U.k(v, False) for _, v in steps], textposition="outside", textfont=dict(size=12, color=T.TEXT),
@@ -473,15 +472,14 @@ t_conso, t_comp, t_ic, t_fx, t_chk, t_det, t_ass = st.tabs([
 with t_conso:
     h1, h2 = st.columns([5, 1.3], vertical_alignment="center")
     h1.caption(f"Sum of {n_ok} companies in kEUR · FX {rep.fx_reference} (one rate for all 3 months) · IC payments "
-               "are not in inflows / outflows · first week of each month = Σ companies' opening balances.")
+               "are not in inflows / outflows · balances = Σ companies incl. IC mismatches.")
     h2.download_button("Excel export", data=export(), type="primary", icon=":material/download:", width="stretch",
                        file_name=f"Cashflow_FC_CONSO_{rep.snapshot}{'_FINAL' if rep.status == 'FINAL' else ''}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.markdown(conso_table(c), unsafe_allow_html=True)
 
 with t_comp:
-    st.caption("Month-end balance of each company incl. IC, in kEUR. The sum differs from the group closing by IC "
-               "differences.")
+    st.caption("Month-end balance of each company incl. IC, in kEUR. Group balance = Σ companies.")
     ok = [x for x in rep.consolidated]
     last = c.periods[-1]
     max_abs = max([abs(x.flows.month_closing.get(last) or 0) for x in ok] + [Decimal(1)])
@@ -506,15 +504,8 @@ with t_comp:
                     f'{U.min_cash_cells(x.business_unit, lowest, rep.min_cash)}{U.num_cell(icn)}</tr>')
     sum_open = sum((x.flows.opening.get(wk[0]) or 0 for x in ok), Decimal(0))
     sums = {p: sum((x.flows.month_closing.get(p) or 0 for x in ok), Decimal(0)) for p in c.periods}
-    body.append('<tr class="total"><td class="lbl">Σ companies</td><td></td>' + U.num_cell(sum_open)
+    body.append('<tr class="total"><td class="lbl">Σ companies = group balance</td><td></td>' + U.num_cell(sum_open)
                 + "".join(U.num_cell(sums[p], "m") for p in c.periods) + "<td></td><td></td><td></td><td></td></tr>")
-    body.append('<tr class="sum"><td class="lbl">Group closing (FC CONSO)</td><td></td>'
-                + U.num_cell(c.monthly["opening"]["TOTAL"])
-                + "".join(U.num_cell(c.monthly["closing"][p], "m") for p in c.periods) + "<td></td><td></td><td></td><td></td></tr>")
-    body.append('<tr class="memo"><td class="lbl">Difference group − Σ companies</td><td></td>'
-                + U.num_cell(c.monthly["opening"]["TOTAL"] - sum_open)
-                + "".join(U.num_cell(c.monthly["closing"][p] - sums[p], "m") for p in c.periods)
-                + "<td></td><td></td><td></td><td></td></tr>")
     st.markdown(U.table([head], body), unsafe_allow_html=True)
 
 with t_ic:
@@ -687,4 +678,4 @@ with t_ass:
                 + "</ol></div>", unsafe_allow_html=True)
 
 st.markdown(U.footer(f"Source: Keboola · app revisions of snapshot {rep.snapshot} · FX {rep.fx_reference}",
-                     f"{n_ok} companies · kEUR · IC eliminated · logic of Excel “FC CONSO”"), unsafe_allow_html=True)
+                     f"{n_ok} companies · kEUR · balances = Σ companies · logic of Excel “FC CONSO”"), unsafe_allow_html=True)

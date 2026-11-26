@@ -47,8 +47,9 @@ IDL rate type `SK (BS)` of the month **before** the snapshot, applied to all thr
 ### Intercompany
 Only *IC outflow – other VI group* (template row 89) is split by counterparty; the split must equal the line
 in every interval. As in the consolidation workbook, the **official group figures eliminate intercompany flows**
-(IC receipts and IC outflows are left out of group inflow / outflow); the non-eliminated view is shown for
-reconciliation only.
+(IC receipts and IC outflows are left out of group inflow / outflow). **Group cash balances are the plain sum
+of the companies' balances** (client decision 2026-11-26): IC that does not net to zero stays in the balance and
+is shown as its own line “IC mismatch (not eliminated)” – Closing = Opening + Net + IC mismatch.
 
 **From snapshot 202612 on – IC inflow is filled automatically.** Each company enters only the IC money it
 **sends**, every payment with its receiver: row “IC (VIDE-GMBH)” = payment to VIDE GmbH, rows “IC to <company>”

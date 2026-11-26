@@ -40,13 +40,15 @@ def test_ic_is_eliminated_and_balances_follow_fc_conso():
     assert sum(v for _, v in bridge(c)[1:-1]) + bridge(c)[0][1] == bridge(c)[-1][1]
 
 
-def test_unbalanced_ic_shows_up_as_month_transition():
+def test_unbalanced_ic_stays_in_the_balance_as_ic_mismatch():
     a = _flows("A", {("L_OPENING_CASH_BALANCE", "202610_W1"): 1000, ("L_INTERCOMPANY_OTHER_OUTFLOW", "202610_W4"): 300}, 1)
     c = consolidate([a], WEEKS)
     assert c.monthly["ic_diff"]["202610"] == D("-0.3")
-    assert c.monthly["closing"]["202610"] == D(1)               # group ignores IC within the month
-    assert c.weekly["opening"]["202611_W1"] == D("0.7")         # ...and re-bases on the company opening
-    assert dict(bridge(c))["Month transitions*"] == D("-0.3")
+    assert c.monthly["net"]["202610"] == 0                      # IC is not a group inflow / outflow ...
+    assert c.monthly["closing"]["202610"] == D("0.7")           # ... but the balance is the plain sum of companies
+    assert c.monthly["ic_bal"]["202610"] == D("-0.3")           # closing = opening + net + IC mismatch
+    assert c.weekly["opening"]["202611_W1"] == D("0.7")
+    assert dict(bridge(c))["IC mismatches"] == D("-0.3")
 
 
 def test_ic_reconciliation_splits_the_difference_by_flow_and_pairs():

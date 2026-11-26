@@ -6,8 +6,10 @@ Rules (docs/CONSOLIDATION_SPEC.md, A.3/A.4):
 * IC is eliminated: IC receipts (template rows 64/65) and IC payments (88/89) are not in group inflow /
   outflow / net; they are shown as memo lines with the check IC in − IC out (= 0).
 * Net Cash Movement (group) = Total inflow − Total outflow + Borrowing (external flows only).
-* Opening: first week of a month = Σ company openings of that week; following weeks = previous group
-  closing. Closing = opening + net. Month column: opening of W1, closing of the last week.
+* Balances = plain sum of the companies' balances (client decision 2026-11-26): opening / closing of every
+  week = Σ company opening / closing (incl. IC). The IC that does not net to zero (one side books more than
+  the other) is shown as its own line "IC mismatch (not eliminated)": closing = opening + net + IC mismatch.
+  Month column: opening of W1, closing of the last week.
 * Empty cells stay empty in the companies' data; in sums an optional empty line counts as 0 (as in the app).
 """
 from __future__ import annotations
@@ -53,6 +55,7 @@ CONSO_ROWS: list[tuple[str, str, str]] = [
     ("_bal", "CASH BALANCE", "section"),
     ("opening", "Opening Cash Balance", "line"),
     ("net_bal", "Net Cash Movement", "line"),
+    ("ic_bal", "IC mismatch (not eliminated)", "line"),
     ("closing", "Closing Cash Balance", "total"),
     ("_ic", "INTERCOMPANY (eliminated)", "section"),
     ("ic_in", "Cash inflow IC (memo)", "memo"),
@@ -188,16 +191,12 @@ def consolidate(companies: list[CompanyFlows], weeks: list[WeekPeriod]) -> Conso
         g.setdefault("net", {})[wc] = g["total_in"][wc] - g["total_out"][wc] + g["borrowing"][wc]
         g.setdefault("net_bal", {})[wc] = g["net"][wc]
         g.setdefault("ic_diff", {})[wc] = g["ic_in"][wc] - g["ic_out"][wc]
-    g["opening"], g["closing"] = {}, {}
-    prev = None
-    for w in weeks:
+    g["opening"], g["closing"], g["ic_bal"] = {}, {}, {}
+    for w in weeks:                              # plain sum of the companies' balances (incl. IC)
         wc = w.code_week_period
-        if prev is not None and prev.code_period_value == w.code_period_value:
-            g["opening"][wc] = g["closing"][prev.code_week_period]
-        else:                                    # first week of a month: re-based on the companies' openings
-            g["opening"][wc] = sum((x.opening[wc] or ZERO for x in companies), ZERO)
-        g["closing"][wc] = g["opening"][wc] + g["net"][wc]
-        prev = w
+        g["opening"][wc] = sum((x.opening[wc] or ZERO for x in companies), ZERO)
+        g["closing"][wc] = sum((x.closing[wc] or ZERO for x in companies), ZERO)
+        g["ic_bal"][wc] = g["closing"][wc] - g["opening"][wc] - g["net"][wc]
 
     def month_cols(key: str, wcs: list[str]) -> Decimal:
         if key == "opening":
@@ -214,7 +213,7 @@ def consolidate(companies: list[CompanyFlows], weeks: list[WeekPeriod]) -> Conso
 
 
 def bridge(c: Consolidation) -> list[tuple[str, Decimal]]:
-    """Cash bridge over the horizon: opening -> flows -> month transitions (residual) -> closing."""
+    """Cash bridge over the horizon: opening -> flows -> IC mismatches (not eliminated) -> closing."""
     m = c.monthly
     opening, closing = m["opening"]["TOTAL"], m["closing"]["TOTAL"]
     steps = [("Opening", opening), ("Inflows", m["total_in"]["TOTAL"]), ("Material & projects", -m["mat_out"]["TOTAL"]),
@@ -223,7 +222,7 @@ def bridge(c: Consolidation) -> list[tuple[str, Decimal]]:
         steps.append(("Financing", m["borrowing"]["TOTAL"]))
     residual = closing - (opening + sum(v for _, v in steps[1:]))
     if abs(residual) >= Decimal("0.05"):
-        steps.append(("Month transitions*", residual))
+        steps.append(("IC mismatches", residual))
     steps.append(("Closing", closing))
     return steps
 
