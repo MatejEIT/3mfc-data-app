@@ -86,6 +86,8 @@ def first_week_code(calendar: Iterable[WeekPeriod]) -> str:
 
 def is_cell_editable(line: Line, week_code: str, first_week: str) -> bool:
     """Single source of truth for editability (enforced again server-side)."""
+    if line.derived:
+        return False
     mode = METRICS[line.metric_code].input_mode
     if mode == InputMode.LINE_INPUT:
         return not week_code.endswith("_M")

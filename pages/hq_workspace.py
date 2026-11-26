@@ -229,7 +229,7 @@ if view is not None:
                 st.markdown(U.table(['<tr><th class="lbl">IC flow · 3 months</th><th>Received</th><th>Paid</th>'
                                      '<th>Difference</th><th>Status</th></tr>'], body), unsafe_allow_html=True)
                 mx = ic_matrix(cons, [w.code_week_period for w in cons.weeks], pair_partner=single_partners(
-                    dict(zip(entities["CODE_ENTITY"], entities["CODE_BUSINESS_UNIT"]))))
+                    dict(zip(entities["CODE_ENTITY"], entities["CODE_BUSINESS_UNIT"]))), pending=set(rep.pending))
                 bad = mx.mismatches(ic_limit)
                 un_paid, un_rec = mx.unspecified
                 st.caption(f"{len(bad)} named pair(s) do not match"

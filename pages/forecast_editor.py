@@ -126,6 +126,21 @@ with work:
     # key figures of the whole horizon (live preview incl. unsaved changes)
     kpi_slot = st.container()
 
+    if ws.ic_inflow is not None:
+        _src = ", ".join(b for b, _, _ in ws.ic_inflow.sources) or "nobody yet"
+        _msg = (f"**Intercompany:** enter only the IC money you **send** – every payment with its receiver "
+                f"(row “IC (VIDE-GMBH)” = to VIDE GmbH, rows “IC to …” = to that company). Your **IC inflow is filled "
+                f"automatically** from what the other companies send you in their submitted forecasts – "
+                f"received from: {_src}.")
+        if ws.ic_inflow.pending:
+            _msg += f" Not submitted yet ({len(ws.ic_inflow.pending)}): {', '.join(ws.ic_inflow.pending)}."
+        if ws.ic_inflow.fx_missing:
+            _msg += (f" No FX rate yet – not converted: {', '.join(ws.ic_inflow.fx_missing)}.")
+        if ws.pending_audit and not read_only:
+            _msg += (" Your IC rows were adjusted to the new rule (entered IC inflow removed / IC outflow moved to "
+                     "the partner row) – **Save** to keep it; every change is in the change log.")
+        st.info(_msg, icon=":material/sync_alt:")
+
     i1, i2 = st.columns([5.2, 1.3])
     with i1:
         T.instructions(ws.currency, SCALE)

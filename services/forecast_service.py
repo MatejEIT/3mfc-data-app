@@ -11,7 +11,8 @@ from decimal import Decimal
 from domain import business_checks as BC
 from domain.calc import ForecastResult, calculate, ordered_weeks
 from domain.calendar import next_period
-from domain.ic_partners import parse_partner_marker, with_added_partners
+from domain.ic_flow import IC_DERIVED_FROM, inflow_issues, is_derived, move_to_single_partner, outflow_issues
+from domain.ic_partners import parse_partner_marker, partner_line_id, single_partners, with_added_partners
 from domain.metrics import IC_SPLIT_METRIC, METRICS, InputMode, is_nameable, is_placeholder_label
 from domain.models import (
     ChangeType,
@@ -29,6 +30,7 @@ from domain.models import (
 )
 from domain.validation import Edit, has_blocking, validate_edits, validate_forecast, validate_label_edits
 from services.auth_service import AccessDenied, User
+from services.ic_inflow import apply_derived, build_payers, pending_companies
 from services.reference_data import ReferenceData
 from services.repository import AuditEvent, CommitRequest, ForecastRepository, ForecastState, RevisionInfo, new_id, utc_now
 
@@ -53,6 +55,9 @@ class Workspace:
     issues: list[Issue] = field(default_factory=list)
     company_names: dict[str, str] = field(default_factory=dict)
     final: bool = False             # HQ marked the snapshot FINAL -> read-only for everybody
+    ic_inflow: object = None        # DerivedInflow (domain/ic_flow.py) when IC inflow is derived, else None
+    derived_cells: dict = field(default_factory=dict)       # calculated IC inflow cells (never stored)
+    pending_audit: list = field(default_factory=list)       # AuditEvents of automatic changes, saved with the next save
 
     @property
     def first_week(self) -> str:
@@ -70,9 +75,15 @@ class Workspace:
         return override
 
 
-def _submit_note(comment: str, acknowledged: list[Issue]) -> str:
-    """Audit text of a submit: the user's comment plus the validation findings they accepted."""
+def _submit_note(comment: str, acknowledged: list[Issue], ic_inflow=None) -> str:
+    """Audit text of a submit: the user's comment plus the validation findings they accepted (and, when IC
+    inflow is derived, the partner revisions it came from)."""
     note = comment.strip() or "Forecast submitted"
+    if ic_inflow is not None:
+        src = "; ".join(f"{b} {rid} {total:,.2f}" for b, rid, total in ic_inflow.sources) or "none"
+        note += f" | IC inflow from partners (LCY): {src}"
+        if ic_inflow.pending:
+            note += " | not submitted yet: " + ", ".join(ic_inflow.pending)
     shown = [i for i in acknowledged if i.severity != Severity.BLOCKING]
     if shown:
         note += " | Submitted with validation findings: " + "; ".join(
@@ -103,20 +114,57 @@ class ForecastService:
         rev = revision or head
         state = self.repo.load_state(snapshot, bu, rev) if rev else ForecastState(snapshot, bu, None)  # job 2
         lines = with_added_partners(bu, self.ref.lines(bu), state.labels, names)
-        result = calculate(lines, calendar, state.cells)
+        fx = self.ref.fx_rates(bu, snapshot)
+        derived, pending_audit = None, []
+        if is_derived(snapshot):
+            lines, derived, pending_audit = self._derive(user, snapshot, bu, str(ent["CODE_LOCAL_CURRENCY"]), fx,
+                                                         lines, state, sub, names)
+        result = calculate(lines, calendar, {**state.cells, **(derived.cells if derived else {})})
         sub = sub[sub["CODE_BUSINESS_UNIT"] == bu]
         status = SubmissionStatus(sub.iloc[0]["STATUS"]) if not sub.empty else SubmissionStatus.DRAFT
         cps = set(self.ref.counterparties()["CODE_COUNTERPARTY_ENTITY"])
-        fx = self.ref.fx_rates(bu, snapshot)
         ws = Workspace(
             snapshot, bu, str(ent["NAME_ENTITY"]), str(ent["CODE_LOCAL_CURRENCY"]), str(ent["CODE_REGION"]),
             lines, calendar, state, result, fx, self.ref.fx_reference(bu, snapshot), status,
             sub.iloc[0]["SUBMISSION_ID"] if not sub.empty else "",
             sub.iloc[0]["SUBMITTED_REVISION_ID"] if not sub.empty else "", cps, company_names=names)
         ws.final = snap_row.get("STATUS") == "FINAL"
+        if derived is not None:
+            ws.ic_inflow, ws.derived_cells, ws.pending_audit = derived, derived.cells, pending_audit
         ws.issues = self._validate(ws, state.cells, state.ic_details,
                                    set(state.head.carry_forward_reviewed) if state.head else set())
         return ws
+
+    def _derive(self, user: User, snapshot: str, bu: str, currency: str, fx: dict, lines: list[Line],
+                state: ForecastState, sub, names: dict[str, str]):
+        """IC inflow from the submitted companies' outflow (domain/ic_flow.py). Mutates `state`: entered IC
+        inflow is dropped, unnamed 'other VI-group' outflow moves to the single pair partner (pre-fill).
+        Both are recorded as audit events that are written with the next save."""
+        ents = self.ref.entities()
+        all_bus = list(ents["CODE_BUSINESS_UNIT"])
+        submitted = set(sub.loc[sub["STATUS"] == SubmissionStatus.SUBMITTED.value, "CODE_BUSINESS_UNIT"]) - {bu}
+        heads = {b: h for b, h in self.repo.head_revisions(snapshot).items() if b in submitted}
+        payers = build_payers(self.ref, snapshot, self.repo.ic_outflow_cells(heads),
+                              {b: h.revision_id for b, h in heads.items()})
+        applied = apply_derived(bu, currency, fx, lines, state.cells, state.labels, payers,
+                                pending_companies([b for b in all_bus if b != bu], submitted), names)
+        change = ChangeType.HQ_ADJUSTMENT if user.is_hq else ChangeType.ENTITY_EDIT
+        audit = []
+        if applied.dropped:
+            audit.append(AuditEvent("", "", "", "", None, None, "", "", ChangeType.SYSTEM_CORRECTION,
+                                    f"IC inflow is filled from the partners' IC outflow from snapshot "
+                                    f"{IC_DERIVED_FROM} on: {applied.dropped} entered IC inflow value(s) removed"))
+        partner = single_partners(dict(zip(ents["CODE_ENTITY"], ents["CODE_BUSINESS_UNIT"]))).get(bu)
+        cells, moved = move_to_single_partner(bu, applied.lines, applied.cells, partner)
+        if moved:
+            target = partner_line_id(bu, "OUT", partner)
+            for wk in moved:
+                c = cells[(target, wk)]
+                audit.append(AuditEvent(wk[:6], wk, target, c.metric_code, None, c.amount, "", "ENTERED", change,
+                                        f"IC outflow moved from 'IC (other VI-group)' to 'IC to {partner}' "
+                                        "(single partner in the pair list)"))
+        state.cells, state.labels = cells, applied.labels
+        return applied.lines, applied.derived, audit
 
     def _validate(self, ws: Workspace, cells, ic, cf_reviewed: set[str],
                   labels: dict[str, str] | None = None, lines: list[Line] | None = None,
@@ -125,6 +173,8 @@ class ForecastService:
         IDL actuals) - run only by 'Validate & submit'."""
         lines = lines or ws.lines
         bu = ws.business_unit
+        entered = cells
+        cells = {**cells, **ws.derived_cells}
         result = calculate(lines, ws.calendar, cells)
         issues = validate_forecast(bu, lines, ws.calendar, cells, result, ic,
                                    ws.valid_counterparties, {p: v is not None for p, v in ws.fx_rates.items()},
@@ -137,7 +187,10 @@ class ForecastService:
 
         issues += BC.check_months_filled(bu, lines, cells, result.periods)
         issues += BC.check_signs(bu, lines, cells, label_of)
-        issues += BC.check_ic_partner(bu, lines, cells, label_of)
+        if ws.ic_inflow is not None:
+            issues += outflow_issues(bu, lines, entered) + inflow_issues(bu, ws.ic_inflow)
+        else:
+            issues += BC.check_ic_partner(bu, lines, cells, label_of)
         issues += BC.entity_questions(bu)
         issues += BC.check_min_cash(bu, result, ordered_weeks(ws.calendar), ws.fx_rates, ws.currency,
                                     self.ref.min_cash_levels().get(bu[:4]))
@@ -243,6 +296,7 @@ class ForecastService:
 
         ic = list(ws.state.ic_details) if ic_details is None else list(ic_details)
         audit += self._ic_audit(ws, ic, user)
+        audit += ws.pending_audit
 
         cf_reviewed = set(carry_forward_reviewed if carry_forward_reviewed is not None
                           else (ws.state.head.carry_forward_reviewed if ws.state.head else set()))
@@ -261,7 +315,7 @@ class ForecastService:
         if submit:
             submission_id = new_id()
             audit.append(AuditEvent("", "", "", "", None, None, "", "", ChangeType.ENTITY_SUBMIT,
-                                    _submit_note(comment, acknowledged or [])))
+                                    _submit_note(comment, acknowledged or [], ws.ic_inflow)))
             kind = RevisionKind.SUBMIT
         elif user.is_hq:
             kind = RevisionKind.HQ_ADJUSTMENT

@@ -552,7 +552,14 @@ with t_ic:
 
     st.write("")
     _ents = ctx.ref.entities()
-    mx = ic_matrix(c, ic_wcs, pair_partner=single_partners(dict(zip(_ents["CODE_ENTITY"], _ents["CODE_BUSINESS_UNIT"]))))
+    mx = ic_matrix(c, ic_wcs, pair_partner=single_partners(dict(zip(_ents["CODE_ENTITY"], _ents["CODE_BUSINESS_UNIT"]))),
+                   pending=set(rep.pending))
+    if rep.ic_derived:
+        st.info("From this snapshot on, companies enter only the IC they **send**; the receiver's IC inflow is filled "
+                "automatically from it (submitted forecasts only, converted at the snapshot FX rates). Both sides "
+                "therefore agree by construction – open cells show payers that have **not submitted yet**"
+                + (f" ({', '.join(rep.pending)})" if rep.pending else "") + " or amounts without an FX rate.",
+                icon=":material/sync_alt:")
     st.markdown(U.card_head("Who pays whom", f"payer ↓ × receiver → · {ic_pick} · kEUR", "grid"),
                 unsafe_allow_html=True)
     if not mx.cells:

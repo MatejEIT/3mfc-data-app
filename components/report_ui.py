@@ -331,6 +331,9 @@ def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
                f'received {f(rec, False)} (books of {label(r)}), difference {f(rec - paid, False)} kEUR')
         if UNSPEC in (p, r):
             return f'<td class="c un" title="{E(tip)}">{f(paid or rec)}</td>'
+        if m.awaiting(p, r):
+            return (f'<td class="c one" title="{E(tip)} – {E(p)} has not submitted yet, so {E(r)}’s IC inflow is '
+                    f'not filled">{f(paid)}<small>not submitted</small></td>')
         if abs(rec - paid) <= tolerance:
             return f'<td class="c ok" title="{E(tip)}">{f(paid or rec)}</td>'
         if m.other_side_unnamed(p, r):
@@ -363,7 +366,7 @@ def ic_matrix_table(m, names: dict[str, str], tolerance: Decimal) -> str:
                 + num_cell(sum(rec_, Decimal(0)) - sum(paid_, Decimal(0)), dec=1) + "</tr>")
     legend = ('<div class="rp-legend"><span><i style="background:#ECFDF3;border:1px solid #A7E3C2"></i>both sides '
               'agree</span><span><i style="background:#FEE2E2"></i>different amounts (paid / rec.)</span>'
-              '<span><i style="background:#FFF4DE"></i>only one side books it</span>'
+              '<span><i style="background:#FFF4DE"></i>only one side books it / payer not submitted</span>'
               '<span><i style="background:#F4F6FA"></i>counterparty not specified</span>'
               '<span><i style="background:#fff;outline:1.5px dashed #5B7BB5;outline-offset:-2px"></i>partner from the '
               'pair list (Excel colour coding)</span>'

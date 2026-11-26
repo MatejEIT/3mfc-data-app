@@ -50,6 +50,16 @@ in every interval. As in the consolidation workbook, the **official group figure
 (IC receipts and IC outflows are left out of group inflow / outflow); the non-eliminated view is shown for
 reconciliation only.
 
+**From snapshot 202612 on – IC inflow is filled automatically.** Each company enters only the IC money it
+**sends**, every payment with its receiver: row “IC (VIDE-GMBH)” = payment to VIDE GmbH, rows “IC to <company>”
+= payment to that company (VIDE GmbH pays the subsidiaries only through “IC to …” rows). The receiver's IC
+inflow is calculated from it and cannot be edited: VIDE GmbH's payments land in the subsidiary's row
+“IC (VIDE-GMBH)”, every other payer in a row “IC from <company>”. Source = the payer's **submitted** forecast
+(incl. HQ adjustments); until the payer submits, its payment is not in the receiver's inflow (missing is not
+zero). Currency: payer's currency → EUR → receiver's currency at the snapshot FX rates; without a rate the
+amount is left out and reported. Same week as the payment. On submit, the partner revisions used are written
+to the audit trail. Snapshots 202610 and 202611 keep the IC inflow the companies entered.
+
 ### Process
 No approval workflow: entities save drafts and **SUBMIT**. The submitted revision is stored immutably.
 HQ can adjust afterwards; each saved adjustment creates a new revision and audit records and marks the
@@ -68,7 +78,7 @@ anyway with a comment; the comment and the accepted findings are stored in the a
 | Previous snapshot | month-end closing cash differs more than ±30 % from the previous snapshot's forecast |
 | Actuals | average forecast closing cash differs more than ±30 % from the average month-end cash of the last 6 closed months (IDL actuals, account 12200, LCY) |
 | Minimum cash | the lowest weekly cash of a month (converted to kEUR) is below the company's minimum cash level − 10 %; staying above minimum + 20 % is shown as information (excess cash). Group minimum = Σ company minimums |
-| IC without partner | an amount on “IC (other VI-group) – other / not specified” names no partner company, so HQ cannot match it with the other side – use the row “IC from / to <company>” |
+| IC without partner | an amount on “IC (other VI-group) – other / not specified” names no partner company, so HQ cannot match it with the other side – use the row “IC from / to <company>”. **From 202612: blocks submit** (IC outflow must name the receiver; VIDE GmbH may not use row “IC (VIDE-GMBH)”) |
 | Pre-filled month | the 3rd month is still pre-filled from the previous snapshot (keeping it is allowed) |
 | Company questions | fixed reminders, e.g. V004: factoring repayment |
 """)

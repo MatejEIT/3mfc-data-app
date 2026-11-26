@@ -280,6 +280,12 @@ class IcMatrix:
     parties: list[str]                                        # companies with IC, VIDE GmbH first
     cells: dict[tuple[str, str], dict[str, Decimal]]
     assumed: set[tuple[str, str]] = field(default_factory=set)   # cells with a partner from the pair list
+    pending: set[str] = field(default_factory=set)   # payers not submitted yet (derived IC inflow: receiver gets nothing)
+
+    def awaiting(self, payer: str, receiver: str) -> bool:
+        """Derived IC inflow: the payer has not submitted, so the receiver's inflow is not filled yet."""
+        v = self.cell(payer, receiver)
+        return payer in self.pending and bool(v["paid"]) and not v["received"]
 
     def cell(self, payer: str, receiver: str) -> dict[str, Decimal]:
         return self.cells.get((payer, receiver), {"paid": ZERO, "received": ZERO})
@@ -308,7 +314,8 @@ class IcMatrix:
         that company booked no unattributed IC in that direction (else it is a 'not specified' case)."""
         out = [{"payer": p, "receiver": r, "paid": v["paid"], "received": v["received"],
                 "diff": v["received"] - v["paid"], "assumed": (p, r) in self.assumed}
-               for (p, r), v in self.cells.items() if UNSPEC not in (p, r) and not self.other_side_unnamed(p, r)]
+               for (p, r), v in self.cells.items() if UNSPEC not in (p, r) and not self.other_side_unnamed(p, r)
+               and not self.awaiting(p, r)]
         return sorted((m for m in out if abs(m["diff"]) > tolerance), key=lambda m: -abs(m["diff"]))
 
     @property
@@ -319,7 +326,7 @@ class IcMatrix:
 
 
 def ic_matrix(c: Consolidation, wcs: list[str], gmbh_bu: str = GMBH_BU,
-              pair_partner: dict[str, str] | None = None) -> IcMatrix:
+              pair_partner: dict[str, str] | None = None, pending: set[str] | None = None) -> IcMatrix:
     """Payer x receiver matrix from the companies' IC rows: 'IC (VIDE-GMBH)' names VIDE GmbH
     (for VIDE GmbH itself the subsidiary is not named), partner rows name the partner,
     'IC (other VI-group) – other / not specified' names nobody - unless the company has exactly one
@@ -346,7 +353,7 @@ def ic_matrix(c: Consolidation, wcs: list[str], gmbh_bu: str = GMBH_BU,
             if guess:
                 assumed.add((payer, receiver))
     parties = sorted({p for key in cells for p in key if p != UNSPEC}, key=lambda b: (b != gmbh_bu, b))
-    return IcMatrix(parties, cells, assumed)
+    return IcMatrix(parties, cells, assumed, set(pending or ()))
 
 
 def ic_pairs(c: Consolidation, wcs: list[str]) -> list[dict]:

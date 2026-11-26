@@ -137,6 +137,14 @@ class CommitRequest:
     metric_by_line: dict[str, str] = field(default_factory=dict)
 
 
+def _cell_from_row(r: pd.Series) -> InputCell:
+    return InputCell(
+        r["LINE_ID"], r["METRIC_CODE"], r["CODE_PERIOD_VALUE"], r["CODE_WEEK_PERIOD"],
+        parse_stored(r["AMOUNT_LCY"]), ValueState(r["VALUE_STATE"]), ValueOrigin(r["VALUE_ORIGIN"]),
+        Provenance(r["SOURCE_SNAPSHOT"], r["SOURCE_PERIOD"], r["SOURCE_WEEK"], r["SOURCE_LINE_ID"],
+                   r["SOURCE_REVISION_ID"], r["MODIFIED_BY"], r["MODIFIED_AT_UTC"]))
+
+
 def _rev_from_row(r: pd.Series) -> RevisionInfo:
     cf = frozenset(p for p in str(r.get("CARRY_FORWARD_REVIEWED", "")).split(",") if p)
     return RevisionInfo(r["REVISION_ID"], int(r["REVISION_NO"]), RevisionKind(r["REVISION_KIND"]), r["WRITE_ID"],
@@ -263,6 +271,20 @@ class ForecastRepository:
         for _, r in labels.iterrows():
             states[bu_of_write[r["WRITE_ID"]]].labels[r["LINE_ID"]] = r["LINE_LABEL"]
         return states
+
+    def ic_outflow_cells(self, heads: dict[str, RevisionInfo]) -> dict[str, dict[tuple[str, str], InputCell]]:
+        """IC outflow input cells (rows 88 / 89 incl. partner rows) of the given head revisions, ONE job -
+        the source of the receivers' derived IC inflow (domain/ic_flow.py)."""
+        out: dict[str, dict[tuple[str, str], InputCell]] = {bu: {} for bu in heads}
+        if not heads:
+            return out
+        df = read_app(self.gw, S.INPUT, {"WRITE_ID": [h.write_id for h in heads.values()],
+                                         "METRIC_CODE": ["INTERCOMPANY_GMBH_OUTFLOW", "INTERCOMPANY_OTHER_OUTFLOW"]})
+        bu_of_write = {h.write_id: bu for bu, h in heads.items()}
+        for _, r in df.iterrows():
+            cell = _cell_from_row(r)
+            out[bu_of_write[r["WRITE_ID"]]][cell.key] = cell
+        return out
 
     def set_snapshot_status(self, snapshot: str, status: str, periods: list[str], fx_reference: str,
                             actor: str, role: str, comment: str) -> dict[str, RevisionInfo]:

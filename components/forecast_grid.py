@@ -70,7 +70,7 @@ def effective_lines(ws: Workspace, label_pending: LabelEdits | None = None) -> l
 def preview_cells(ws: Workspace, pending: PendingEdits, lines_by_id: dict | None = None
                   ) -> tuple[dict, dict[tuple[str, str], str]]:
     """Apply pending edits for preview. Returns cells and per-cell parse errors."""
-    cells = dict(ws.state.cells)
+    cells = {**ws.state.cells, **ws.derived_cells}          # + calculated IC inflow (read-only)
     errors: dict[tuple[str, str], str] = {}
     for (line_id, field), (raw, scale) in pending.items():
         line = (lines_by_id or ws.lines_by_id).get(line_id)
@@ -167,12 +167,12 @@ def build_frame(ws: Workspace, result: ForecastResult, cells: dict, view: str, p
             rows.append({"_line_id": f"__section__{m.section.name}", "_kind": "SECTION",
                          "Line": SECTION_TITLES[m.section], "_editable": "", "_label_ed": "", "_ph": ""})
         direction = base_direction(ln)
-        if direction and not read_only:
+        if direction and not read_only and not ln.derived:
             rows.append(_ic_add_row(ws, lines, direction))        # "＋ add IC partner" above the 'other' row
         row = {"_line_id": ln.line_id, "_kind": _row_kind(ln), "Line": "" if placeholder else label,
-               "_metric": m.label, "_label_ed": "1" if nameable and not read_only else "",
+               "_metric": ("Filled automatically from what the partner sends you (its submitted IC outflow) – not editable" if ln.derived else m.label), "_label_ed": "1" if nameable and not read_only else "",
                "_ph": "1" if placeholder else "",
-               "_del": "1" if not read_only and (ln.ic_partner or (nameable and (
+               "_del": "1" if not read_only and not ln.derived and (ln.ic_partner or (nameable and (
                    not placeholder or _has_values(cells, ln.line_id, pending)))) else "",
                "_del_click": False}
         editable_fields = []

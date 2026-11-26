@@ -12,16 +12,16 @@ from decimal import Decimal
 from domain.calc import calculate, ordered_weeks
 from domain.calendar import snapshot_periods
 from domain.consolidation import IC_TOLERANCE_KEUR, CompanyFlows, Consolidation, company_flows, consolidate
+from domain.ic_flow import IC_DERIVED_FROM, is_derived
 from domain.ic_partners import with_added_partners
 from domain.min_cash import ABOVE, BELOW, classify, group_level, level_of
+from services.ic_inflow import NO_DELIVERY_EXPECTED, apply_derived, build_payers, pending_companies
 from services.reference_data import ReferenceData
 from services.repository import ForecastRepository
 
 CRITICAL, CHECK, INFO = "Critical", "Check", "Info"
 
-# Companies that are not expected to deliver a forecast (Excel mockup "Ohne Lieferung": V013; V014 has no
-# values in the client workbook). Matched on the 4-character company code. Change here when this changes.
-NO_DELIVERY_EXPECTED = frozenset({"V013", "V014"})
+# Companies not expected to deliver (V013, V014): NO_DELIVERY_EXPECTED in services/ic_inflow.py.
 _ORDER = {CRITICAL: 0, CHECK: 1, INFO: 2}
 
 
@@ -55,6 +55,8 @@ class Report:
     companies: list[CompanyRow] = field(default_factory=list)
     checks: list[dict] = field(default_factory=list)
     min_cash: dict = field(default_factory=dict)          # CODE_ENTITY -> MinCash (DIM_3MFC_APP_MIN_CASH)
+    ic_derived: bool = False                               # IC inflow filled from the payers' outflow
+    pending: list[str] = field(default_factory=list)       # companies not submitted (derived IC inflow)
 
     @property
     def consolidated(self) -> list[CompanyRow]:
@@ -90,6 +92,13 @@ class ReportService:
                      status_row.get("CREATED_AT_UTC", ""), "", snapshot_periods(snapshot), None)
         flows: list[CompanyFlows] = []
         rep.min_cash = self.ref.min_cash_levels()
+        payers = []
+        if is_derived(snapshot):
+            sub = self.repo.submissions(snapshot)
+            submitted = {b for b in sub.loc[sub["STATUS"] == "SUBMITTED", "CODE_BUSINESS_UNIT"] if b in states}
+            payers = build_payers(self.ref, snapshot, {b: states[b].cells for b in submitted},
+                                  {b: states[b].head.revision_id for b in submitted})
+            rep.ic_derived, rep.pending = True, pending_companies(bus, submitted)
         for _, e in ents.iterrows():
             bu, cur = e["CODE_BUSINESS_UNIT"], e["CODE_LOCAL_CURRENCY"]
             rates = self.ref.fx_rates(bu, snapshot)
@@ -116,7 +125,16 @@ class ReportService:
                                        f"No FX rate for {cur} – company NOT consolidated"))
                 continue
             lines = with_added_partners(bu, self.ref.lines(bu), st.labels, names)
-            result = calculate(lines, calendar, st.cells)
+            cells = st.cells
+            if rep.ic_derived:
+                a = apply_derived(bu, cur, rates, lines, st.cells, st.labels, payers,
+                                  [b for b in rep.pending if b != bu], names)
+                lines, cells = a.lines, {**a.cells, **a.derived.cells}
+                if a.derived.fx_missing:
+                    rep.checks.append(_chk(CHECK, bu, "Intercompany",
+                                           "IC inflow from " + ", ".join(a.derived.fx_missing) + " not converted – "
+                                           "FX rate missing"))
+            result = calculate(lines, calendar, cells)
             cf = company_flows(bu, lines, weeks, result, rate, st.labels)
             row.flows = cf
             if not cf.has_values:
@@ -167,6 +185,11 @@ class ReportService:
                     rep.checks.append(_chk(CHECK, "Group", "Intercompany",
                                            f"{p}: IC inflow − IC outflow = {diff:+,.0f} kEUR (tolerance "
                                            f"±{IC_TOLERANCE_KEUR:,.0f}); largest net IC: {top}"))
+        if rep.ic_derived:
+            rep.checks.append(_chk(INFO, "Group", "Intercompany",
+                                   f"IC inflow is filled from the submitted companies' IC outflow (rule from "
+                                   f"{IC_DERIVED_FROM})" + (f"; not submitted yet: {', '.join(rep.pending)} – IC they "
+                                                           "pay is not in the receivers' inflow" if rep.pending else "")))
         if rep.status != "FINAL":
             rep.checks.append(_chk(INFO, "Group", "Status",
                                    "Snapshot is not FINAL – the report shows the current (still changeable) numbers"))

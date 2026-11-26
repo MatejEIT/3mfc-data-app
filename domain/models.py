@@ -120,6 +120,7 @@ class Line:
     source_row: int
     order: int = 0                  # position within the same template row (IC partner rows follow the base row)
     ic_partner: str = ""            # CODE_BUSINESS_UNIT of the IC partner for partner rows
+    derived: bool = False           # calculated from other companies (IC inflow, domain/ic_flow.py) - read-only
 
 
 @dataclass(frozen=True)
